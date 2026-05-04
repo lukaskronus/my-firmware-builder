@@ -49,6 +49,16 @@ ln -sf /usr/share/zoneinfo/Asia/Ho_Chi_Minh /etc/localtime
 echo "root:1234" | chpasswd
 sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 
+# Create /etc/fstab
+cat > /etc/fstab << 'FSTAB'
+# /etc/fstab: static file system information
+/dev/mmcblk0p9 / ext4 defaults,noatime,errors=remount-ro 0 1
+proc /proc proc defaults 0 0
+sysfs /sys sysfs defaults 0 0
+tmpfs /tmp tmpfs defaults,noatime,nosuid,size=100M 0 0
+tmpfs /var/tmp tmpfs defaults,noatime,nosuid,size=50M 0 0
+FSTAB
+
 # Network configuration (DHCP on eth0)
 mkdir -p /etc/network/interfaces.d
 echo -e "auto eth0\niface eth0 inet dhcp" > /etc/network/interfaces.d/eth0
