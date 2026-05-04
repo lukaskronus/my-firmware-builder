@@ -1,4 +1,4 @@
-name: Build Pure TTL Package with New Kernel (V6)
+name: Build Pure TTL Package with Mainline Kernel (V6)
 
 on:
   workflow_dispatch:
@@ -33,145 +33,99 @@ jobs:
     - name: 5.1. Setup Kernel Build Cache
       uses: actions/cache@v3
       with:
-        path: kernel_build/mv100
-        key: kernel-v6-${{ hashFiles('config_files/hi3798mv100-v6.dts') }}-${{ runner.os }}
+        path: kernel_build/mainline
+        key: kernel-mainline-${{ hashFiles('config_files/hi3798mv100-v6.config') }}-${{ runner.os }}
         restore-keys: |
-          kernel-v6-${{ runner.os }}-
-          kernel-v6-
+          kernel-mainline-${{ runner.os }}-
+          kernel-mainline-
 
-    - name: 5.2. Clone Kernel Repository (if not cached)
+    - name: 5.2. Clone Mainline Kernel Repository (if not cached)
       run: |
-        if [ ! -d "kernel_build/mv100" ]; then
+        if [ ! -d "kernel_build/mainline" ]; then
           mkdir -p kernel_build
           cd kernel_build
-          git clone --single-branch --depth=1 --branch=v6.14.3 https://github.com/loonpn/ec6108v9c-linux-kernel mv100
-          echo "Kernel repository cloned"
+          git clone --single-branch --depth=1 https://github.com/histb-mainline/linux mainline
+          echo "Mainline kernel repository cloned"
         else
           echo "Using cached kernel repository"
-          cd kernel_build/mv100
-          git status
+          cd kernel_build/mainline
+          git pull --depth=1
         fi
-        ls -la kernel_build/mv100/ | head -20
+        ls -la kernel_build/mainline/ | head -20
 
-    - name: 5.3. Prepare Kernel Configuration with Debug Options
+    - name: 5.3. Copy Kernel Configuration
       run: |
-        cd kernel_build/mv100
-    
-        echo "=== Copying custom DTS file from config_files ==="
-        if [ -f "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.dts" ]; then
-          cp -v "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.dts" arch/arm/boot/dts/hi3798mv100-ec6108v9c.dts
+        cd kernel_build/mainline
+        
+        echo "=== Copying custom kernel config from config_files ==="
+        if [ -f "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.config" ]; then
+          cp -v "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.config" .config
+          echo "Custom kernel config applied"
         else
-          echo "ERROR: Custom DTS not found at config_files/hi3798mv100-v6.dts"
+          echo "ERROR: Kernel config not found at config_files/hi3798mv100-v6.config"
           exit 1
         fi
-    
-        echo "=== Checking available defconfigs ==="
-        if [ -f "arch/arm/configs/hi3798mv100_defconfig" ]; then
-          echo "Using hi3798mv100_defconfig"
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- hi3798mv100_defconfig
+        
+        echo "=== Copying custom DTS file (if exists) ==="
+        if [ -f "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.dts" ]; then
+          cp -v "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.dts" arch/arm/boot/dts/hi3798mv100.dts
+          echo "Custom DTS applied"
         else
-          echo "hi3798mv100_defconfig not found, falling back to multi_v7_defconfig"
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- multi_v7_defconfig
+          echo "WARNING: Custom DTS not found, using existing DTS"
         fi
-    
-        echo "=== Enabling Hisilicon-specific drivers and options ==="
-        cat >> .config << 'EOF'
-        # Core platform
-        CONFIG_ARCH_HISI=y
-        CONFIG_ARM_GIC=y
-        CONFIG_HISILICON_TIMER=y
-        CONFIG_ARM_TIMER_SP804=y
-    
-        # Ethernet (mainline FEMAC driver)
-        CONFIG_HISI_FEMAC=y
-        CONFIG_PHYLIB=y
-        CONFIG_REALTEK_PHY=y
-        CONFIG_MICREL_PHY=y
-    
-        # MMC/eMMC fixes – disable HS200, disable debug spam
-        CONFIG_MMC_DW=y
-        CONFIG_MMC_DW_HI3798CV200=y
-        CONFIG_MMC_DEBUG=n
-    
-        # USB
-        CONFIG_USB_EHCI_HCD=y
-        CONFIG_USB_OHCI_HCD=y
-        CONFIG_USB_XHCI_HCD=y
-        CONFIG_USB_STORAGE=y
-    
-        # Boot compatibility
-        CONFIG_ARM_APPENDED_DTB=y
-        CONFIG_ARM_ATAG_DTB_COMPAT=y
-        CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER=y
-        CONFIG_ATAGS=y
-        CONFIG_CMDLINE_FROM_BOOTLOADER=y
-    
-        # Disable PSCI (bootloader does not support it)
-        # CONFIG_ARM_PSCI is not set
-        # CONFIG_ARM_PSCI_FW is not set
-    
-        # Debug UART (PL011)
-        CONFIG_DEBUG_KERNEL=y
-        CONFIG_DEBUG_LL=y
-        CONFIG_DEBUG_LL_UART_PL011=y
-        CONFIG_DEBUG_UART_PHYS=0xf8b00000
-        CONFIG_DEBUG_UART_VIRT=0xf8b00000
-        CONFIG_EARLY_PRINTK=y
-    
-        # Disable features that cause instability
-        # CONFIG_THUMB2_KERNEL is not set
-        # CONFIG_ALLOW_UNALIGNED_ACCESS is not set
-        # CONFIG_NEON is not set
-        # CONFIG_VFPv3 is not set
-        # CONFIG_KERNEL_GZIP is not set
-        # CONFIG_KERNEL_BZIP2 is not set
-        # CONFIG_DEVTMPFS_MOUNT is not set
-        EOF
-    
-        echo "=== Removing any conflicting options ==="
-        sed -i '/CONFIG_THUMB2_KERNEL=y/d' .config
-        sed -i '/CONFIG_ALLOW_UNALIGNED_ACCESS=y/d' .config
-        sed -i '/CONFIG_NEON=y/d' .config
-        sed -i '/CONFIG_VFPv3=y/d' .config
-        sed -i '/CONFIG_KERNEL_GZIP=y/d' .config
-        sed -i '/CONFIG_KERNEL_BZIP2=y/d' .config
-        sed -i '/CONFIG_ARM_PSCI=y/d' .config
-        sed -i '/CONFIG_ARM_PSCI_FW=y/d' .config
-        sed -i '/CONFIG_DEVTMPFS_MOUNT=y/d' .config
-        sed -i '/CONFIG_MMC_DEBUG=y/d' .config
-    
-        echo "=== Final configuration summary ==="
-        grep -E "CONFIG_ARCH_HISI|CONFIG_ARM_PSCI|CONFIG_ARM_APPENDED_DTB|CONFIG_ARM_ATAG|CONFIG_HISILICON_TIMER|CONFIG_ARM_TIMER_SP804|CONFIG_ARM_GIC|CONFIG_DEBUG_LL|CONFIG_EARLY_PRINTK|CONFIG_HISI_FEMAC|CONFIG_MMC_DW|CONFIG_MMC_DEBUG" .config || true
-    
-        echo "=== Regenerating dependencies ==="
+        
+        echo "=== Running olddefconfig to resolve any dependencies ==="
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
+        
+        echo "=== Verifying key configuration options ==="
+        echo "F2FS status:"
+        grep "CONFIG_F2FS_FS" .config || echo "F2FS is disabled (recommended)"
+        echo ""
+        echo "GPU status:"
+        grep "CONFIG_DRM_LIMA" .config || echo "GPU drivers disabled"
+        echo ""
+        echo "MMC debug status:"
+        grep "CONFIG_MMC_DEBUG" .config || echo "MMC debug disabled"
+        echo ""
+        echo "PSCI status:"
+        grep "CONFIG_ARM_PSCI" .config || echo "PSCI disabled"
         
     - name: 5.4. Build Kernel
       run: |
-        cd kernel_build/mv100
+        cd kernel_build/mainline
         echo "Building with $(nproc) cores..."
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) 2>&1 | tee build.log
     
         echo "=== Checking outputs ==="
         ls -lh arch/arm/boot/Image arch/arm/boot/zImage || true
-        ls -lh arch/arm/boot/dts/hi3798mv100-ec6108v9c.dtb || true
+        ls -lh arch/arm/boot/dts/*.dtb || true
     
-        # Fail loudly if zImage is missing
         if [ ! -f arch/arm/boot/zImage ]; then
           echo "ERROR: zImage not found!"
           exit 1
         fi
-        if [ ! -f arch/arm/boot/dts/hi3798mv100-ec6108v9c.dtb ]; then
-          echo "ERROR: DTB not found!"
-          exit 1
+        if [ ! -f arch/arm/boot/dts/hi3798mv100.dtb ]; then
+          echo "WARNING: hi3798mv100.dtb not found, looking for any dtb..."
+          find arch/arm/boot/dts/ -name "*.dtb" | head -5
         fi
-    
+
     - name: 5.5. Create uImage
       run: |
-        cd kernel_build/mv100
+        cd kernel_build/mainline
     
         ZIMAGE="arch/arm/boot/zImage"
-        DTB="arch/arm/boot/dts/hi3798mv100-ec6108v9c.dtb"
+        DTB="arch/arm/boot/dts/hi3798mv100.dtb"
+        
+        # Try alternative DTB names if the exact name doesn't exist
+        if [ ! -f "$DTB" ]; then
+          echo "Looking for alternative DTB files..."
+          DTB=$(find arch/arm/boot/dts/ -name "hi3798mv100*.dtb" | head -1)
+          if [ -z "$DTB" ]; then
+            echo "ERROR: No hi3798mv100 DTB found!"
+            exit 1
+          fi
+          echo "Using DTB: $DTB"
+        fi
     
         if [ ! -f "$ZIMAGE" ]; then
           echo "ERROR: zImage not found!"
@@ -201,7 +155,7 @@ jobs:
 
     - name: 5.6. Verify Kernel Size Fits Partition
       run: |
-        cd kernel_build/mv100
+        cd kernel_build/mainline
         
         KERNEL_SIZE=$(stat -c%s uImage)
         KERNEL_SIZE_MB=$(echo "scale=2; $KERNEL_SIZE / 1048576" | bc)
@@ -221,7 +175,7 @@ jobs:
 
     - name: 5.7. Build Kernel Modules and Headers
       run: |
-        cd kernel_build/mv100
+        cd kernel_build/mainline
         
         echo "Building kernel modules..."
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_MOD_STRIP=1 INSTALL_MOD_PATH=../kernel_modules modules_install
@@ -240,12 +194,15 @@ jobs:
 
     - name: 5.9. Copy uImage to Workspace
       run: |
-        cp kernel_build/mv100/uImage ${GITHUB_WORKSPACE}/new_uImage
+        cp kernel_build/mainline/uImage ${GITHUB_WORKSPACE}/new_uImage
         ls -lh ${GITHUB_WORKSPACE}/new_uImage
 
-    - name: 6. Build Pure Debian 12 Rootfs
+    - name: 6. Build Pure Debian 13 Trixie Rootfs
       run: |
         chmod +x build_rootfs.sh
+        # Update build_rootfs.sh for Debian 13 Trixie
+        sed -i 's/bookworm/trixie/g' build_rootfs.sh
+        sed -i 's/Debian 12/Debian 13/g' build_rootfs.sh
         ./build_rootfs.sh
 
     - name: 7. Install Kernel Modules into Debian Rootfs
@@ -255,18 +212,33 @@ jobs:
         echo "Installing kernel modules into Debian rootfs..."
         sudo mkdir -p "$ROOTFS_DIR/lib/modules"
         
+        # Extract and install modules
         sudo tar -xzf kernel_build/linux-build.tar.gz -C /tmp
         
-        sudo cp -a /tmp/kernel_modules/lib/modules/* "$ROOTFS_DIR/lib/modules/" || true
+        # Find and copy the kernel module directory
+        MODULE_DIR=$(ls -d /tmp/kernel_modules/lib/modules/*/ 2>/dev/null | head -1)
+        if [ -n "$MODULE_DIR" ]; then
+          sudo cp -a "$MODULE_DIR"* "$ROOTFS_DIR/lib/modules/"
+          echo "Modules installed from: $MODULE_DIR"
+        else
+          echo "WARNING: No modules found in /tmp/kernel_modules/lib/modules/"
+          ls -la /tmp/kernel_modules/lib/modules/ || true
+        fi
         
+        # Run depmod in chroot
         sudo mount -t proc none "$ROOTFS_DIR/proc" || true
         sudo mount -t sysfs none "$ROOTFS_DIR/sys" || true
-        sudo chroot "$ROOTFS_DIR" depmod -a || echo "depmod warnings are normal during cross-build"
+        sudo chroot "$ROOTFS_DIR" depmod -a 2>&1 || echo "depmod warnings are normal during cross-build"
         sudo umount "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" 2>/dev/null || true
 
     - name: 8. Create Pure Rootfs Image
       run: |
-        ORIG_SIZE=$(stat -c%s "ttl_template/rootfs-32.img")
+        ORIG_SIZE=$(stat -c%s "ttl_template/rootfs-32.img" || echo "104857600")
+        
+        # Use a safe default if original size can't be determined
+        if [ "$ORIG_SIZE" -lt 1048576 ]; then
+          ORIG_SIZE=209715200  # 200MB fallback
+        fi
         
         dd if=/dev/zero of=rootfs-32-pure.img bs=1 count=0 seek=$ORIG_SIZE
         mkfs.ext4 -F -L "rootfs" rootfs-32-pure.img
@@ -286,35 +258,42 @@ jobs:
         cp new_uImage final_package/uImage || cp new_uImage final_package/boot/uImage || true
         
         cd final_package
-        zip -r ../TTL-hi3798mv100-32bit-PURE-KernelV6-$(date +%Y%m%d).zip .
+        zip -r ../TTL-hi3798mv100-32bit-MAINLINE-Trixie-$(date +%Y%m%d).zip .
         cd ..
         
-        ls -lh TTL-hi3798mv100-32bit-PURE-KernelV6-*.zip
+        ls -lh TTL-hi3798mv100-32bit-MAINLINE-Trixie-*.zip
 
     - name: 10. Upload Artifacts - Kernel uImage
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-uimage
+        name: kernel-uimage-mainline
         path: new_uImage
         retention-days: 7
 
     - name: 11. Upload Artifacts - Rootfs Image
       uses: actions/upload-artifact@v4
       with:
-        name: rootfs-image
+        name: rootfs-image-trixie
         path: rootfs-32-pure.img
         retention-days: 7
 
     - name: 12. Upload Artifacts - Complete TTL Package
       uses: actions/upload-artifact@v4
       with:
-        name: ttl-package
-        path: TTL-hi3798mv100-32bit-PURE-KernelV6-*.zip
+        name: ttl-package-mainline
+        path: TTL-hi3798mv100-32bit-MAINLINE-Trixie-*.zip
         retention-days: 7
 
     - name: 13. Upload Artifacts - Build Logs
       uses: actions/upload-artifact@v4
       with:
-        name: build-logs
-        path: kernel_build/mv100/build.log
+        name: build-logs-mainline
+        path: kernel_build/mainline/build.log
+        retention-days: 7
+
+    - name: 14. Upload Artifacts - Kernel Config
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-config
+        path: kernel_build/mainline/.config
         retention-days: 7
