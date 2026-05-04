@@ -1,4 +1,4 @@
-name: Build Pure TTL Package with Mainline Kernel (V6)
+name: Build Pure TTL Package with Pre-built Kernel (6.19.0-rc3+)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     steps:
     - name: 1. Checkout Code
@@ -27,175 +27,75 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y qemu-user-static debootstrap e2fsprogs zip \
-          gcc-arm-linux-gnueabihf u-boot-tools bc bison flex libssl-dev \
-          libncurses5-dev zlib1g-dev device-tree-compiler
+          u-boot-tools p7zip-full
 
-    - name: 5.1. Setup Kernel Build Cache
-      uses: actions/cache@v3
-      with:
-        path: kernel_build/mainline
-        key: kernel-mainline-${{ hashFiles('config_files/hi3798mv100-v6.config') }}-${{ runner.os }}
-        restore-keys: |
-          kernel-mainline-${{ runner.os }}-
-          kernel-mainline-
-
-    - name: 5.2. Clone Mainline Kernel Repository (if not cached)
+    - name: 5. Setup Pre-built Kernel and Modules
       run: |
-        if [ ! -d "kernel_build/mainline" ]; then
-          mkdir -p kernel_build
-          cd kernel_build
-          git clone --single-branch --depth=1 https://github.com/histb-mainline/linux mainline
-          echo "Mainline kernel repository cloned"
+        # Copy uImage
+        if [ -f "${GITHUB_WORKSPACE}/prebuilt/uImage" ]; then
+          echo "Using pre-built uImage from prebuilt directory"
+          cp ${GITHUB_WORKSPACE}/prebuilt/uImage ${GITHUB_WORKSPACE}/new_uImage
+        elif [ -f "${GITHUB_WORKSPACE}/uImage" ]; then
+          echo "Using pre-built uImage from workspace root"
+          cp ${GITHUB_WORKSPACE}/uImage ${GITHUB_WORKSPACE}/new_uImage
         else
-          echo "Using cached kernel repository"
-          cd kernel_build/mainline
-          git pull --depth=1
-        fi
-        ls -la kernel_build/mainline/ | head -20
-
-    - name: 5.3. Copy Kernel Configuration
-      run: |
-        cd kernel_build/mainline
-        
-        echo "=== Copying custom kernel config from config_files ==="
-        if [ -f "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.config" ]; then
-          cp -v "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.config" .config
-          echo "Custom kernel config applied"
-        else
-          echo "ERROR: Kernel config not found at config_files/hi3798mv100-v6.config"
+          echo "ERROR: No uImage found!"
           exit 1
         fi
         
-        echo "=== Copying custom DTS file (if exists) ==="
-        if [ -f "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.dts" ]; then
-          cp -v "${GITHUB_WORKSPACE}/config_files/hi3798mv100-v6.dts" arch/arm/boot/dts/hi3798mv100.dts
-          echo "Custom DTS applied"
-        else
-          echo "WARNING: Custom DTS not found, using existing DTS"
-        fi
-        
-        echo "=== Running olddefconfig to resolve any dependencies ==="
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
-        
-        echo "=== Verifying key configuration options ==="
-        echo "F2FS status:"
-        grep "CONFIG_F2FS_FS" .config || echo "F2FS is disabled (recommended)"
-        echo ""
-        echo "GPU status:"
-        grep "CONFIG_DRM_LIMA" .config || echo "GPU drivers disabled"
-        echo ""
-        echo "MMC debug status:"
-        grep "CONFIG_MMC_DEBUG" .config || echo "MMC debug disabled"
-        echo ""
-        echo "PSCI status:"
-        grep "CONFIG_ARM_PSCI" .config || echo "PSCI disabled"
-        
-    - name: 5.4. Build Kernel
-      run: |
-        cd kernel_build/mainline
-        echo "Building with $(nproc) cores..."
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) 2>&1 | tee build.log
-    
-        echo "=== Checking outputs ==="
-        ls -lh arch/arm/boot/Image arch/arm/boot/zImage || true
-        ls -lh arch/arm/boot/dts/*.dtb || true
-    
-        if [ ! -f arch/arm/boot/zImage ]; then
-          echo "ERROR: zImage not found!"
-          exit 1
-        fi
-        if [ ! -f arch/arm/boot/dts/hi3798mv100.dtb ]; then
-          echo "WARNING: hi3798mv100.dtb not found, looking for any dtb..."
-          find arch/arm/boot/dts/ -name "*.dtb" | head -5
-        fi
-
-    - name: 5.5. Create uImage
-      run: |
-        cd kernel_build/mainline
-    
-        ZIMAGE="arch/arm/boot/zImage"
-        DTB="arch/arm/boot/dts/hi3798mv100.dtb"
-        
-        # Try alternative DTB names if the exact name doesn't exist
-        if [ ! -f "$DTB" ]; then
-          echo "Looking for alternative DTB files..."
-          DTB=$(find arch/arm/boot/dts/ -name "hi3798mv100*.dtb" | head -1)
-          if [ -z "$DTB" ]; then
-            echo "ERROR: No hi3798mv100 DTB found!"
-            exit 1
+        # Extract kernel modules
+        if [ -f "${GITHUB_WORKSPACE}/prebuilt/6.19.0-rc3+.7z" ]; then
+          echo "Extracting kernel modules from 6.19.0-rc3+.7z"
+          mkdir -p ${GITHUB_WORKSPACE}/kernel_modules_temp
+          7z x ${GITHUB_WORKSPACE}/prebuilt/6.19.0-rc3+.7z -o${GITHUB_WORKSPACE}/kernel_modules_temp/
+          
+          # Find the modules directory (might be in a subfolder)
+          MODULES_DIR=$(find ${GITHUB_WORKSPACE}/kernel_modules_temp -type d -name "lib" 2>/dev/null | head -1)
+          if [ -n "$MODULES_DIR" ]; then
+            echo "Found modules in: $MODULES_DIR"
+            # Create the module package structure
+            mkdir -p ${GITHUB_WORKSPACE}/kernel_build/kernel_modules
+            cp -r ${MODULES_DIR}/* ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/ 2>/dev/null || true
+          else
+            # Check if the archive extracts directly to lib/modules structure
+            if [ -d "${GITHUB_WORKSPACE}/kernel_modules_temp/lib" ]; then
+              mkdir -p ${GITHUB_WORKSPACE}/kernel_build/kernel_modules
+              cp -r ${GITHUB_WORKSPACE}/kernel_modules_temp/* ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/
+            else
+              # Maybe the archive contains the modules directory directly
+              MODULE_VERSION_DIR=$(find ${GITHUB_WORKSPACE}/kernel_modules_temp -maxdepth 2 -type d -name "6.19.0-rc3+" 2>/dev/null | head -1)
+              if [ -n "$MODULE_VERSION_DIR" ]; then
+                mkdir -p ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules
+                cp -r "$MODULE_VERSION_DIR" ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/
+              fi
+            fi
           fi
-          echo "Using DTB: $DTB"
+          
+          echo "Module structure:"
+          ls -la ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/
+          if [ -d "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules" ]; then
+            echo "Modules found:"
+            ls -la ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/
+          fi
+        else
+          echo "WARNING: Kernel modules archive not found at prebuilt/6.19.0-rc3+.7z"
+          echo "Continuing without modules (some features may not work)"
         fi
-    
-        if [ ! -f "$ZIMAGE" ]; then
-          echo "ERROR: zImage not found!"
-          ls -lh arch/arm/boot/
-          exit 1
-        fi
-    
-        ZIMAGE_SIZE=$(stat -c%s "$ZIMAGE")
-        DTB_SIZE=$(stat -c%s "$DTB")
-        echo "zImage size: $ZIMAGE_SIZE bytes (~$(( ZIMAGE_SIZE / 1024 / 1024 ))MB)"
-        echo "DTB size:    $DTB_SIZE bytes"
-    
-        if [ "$ZIMAGE_SIZE" -lt 3000000 ]; then
-          echo "ERROR: zImage too small, build may have failed"
-          exit 1
-        fi
-    
-        echo "Concatenating zImage + DTB..."
-        cat "$ZIMAGE" "$DTB" > zImage-dtb
-    
-        echo "Creating uImage..."
-        mkimage -A arm -O linux -T kernel -C none \
-          -a 0x2000000 -e 0x2000000 \
-          -n linux -d zImage-dtb uImage
-    
-        ls -lh uImage
-
-    - name: 5.6. Verify Kernel Size Fits Partition
-      run: |
-        cd kernel_build/mainline
         
-        KERNEL_SIZE=$(stat -c%s uImage)
+        # Verify kernel size
+        KERNEL_SIZE=$(stat -c%s ${GITHUB_WORKSPACE}/new_uImage)
         KERNEL_SIZE_MB=$(echo "scale=2; $KERNEL_SIZE / 1048576" | bc)
         MAX_SIZE=$((30 * 1048576))
         
         echo "=== Kernel Size Check ==="
-        echo "New kernel size: ${KERNEL_SIZE_MB}MB"
+        echo "Kernel size: ${KERNEL_SIZE_MB}MB"
         echo "Partition size: 30MB"
-        echo "Remaining space: $(echo "scale=2; (30 - $KERNEL_SIZE_MB)" | bc)MB"
         
         if [ $KERNEL_SIZE -gt $MAX_SIZE ]; then
           echo "ERROR: Kernel too large for 30MB partition!"
           exit 1
         fi
-        
         echo "✓ Kernel fits in partition"
-
-    - name: 5.7. Build Kernel Modules and Headers
-      run: |
-        cd kernel_build/mainline
-        
-        echo "Building kernel modules..."
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_MOD_STRIP=1 INSTALL_MOD_PATH=../kernel_modules modules_install
-        
-        echo "Installing kernel headers..."
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_HDR_PATH=../kernel_headers headers_install
-        
-        echo "Modules and headers completed"
-
-    - name: 5.8. Package Kernel Build Artifacts
-      run: |
-        cd kernel_build
-        
-        tar -zcvf linux-build.tar.gz kernel_headers kernel_modules
-        ls -lh linux-build.tar.gz
-
-    - name: 5.9. Copy uImage to Workspace
-      run: |
-        cp kernel_build/mainline/uImage ${GITHUB_WORKSPACE}/new_uImage
-        ls -lh ${GITHUB_WORKSPACE}/new_uImage
 
     - name: 6. Build Pure Debian 13 Trixie Rootfs
       run: |
@@ -209,27 +109,36 @@ jobs:
       run: |
         ROOTFS_DIR=$(pwd)/pure_rootfs
         
-        echo "Installing kernel modules into Debian rootfs..."
-        sudo mkdir -p "$ROOTFS_DIR/lib/modules"
-        
-        # Extract and install modules
-        sudo tar -xzf kernel_build/linux-build.tar.gz -C /tmp
-        
-        # Find and copy the kernel module directory
-        MODULE_DIR=$(ls -d /tmp/kernel_modules/lib/modules/*/ 2>/dev/null | head -1)
-        if [ -n "$MODULE_DIR" ]; then
-          sudo cp -a "$MODULE_DIR"* "$ROOTFS_DIR/lib/modules/"
-          echo "Modules installed from: $MODULE_DIR"
+        if [ -d "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules" ]; then
+          echo "Installing kernel modules into Debian rootfs..."
+          sudo mkdir -p "$ROOTFS_DIR/lib/modules"
+          
+          # Copy modules
+          sudo cp -a ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/* "$ROOTFS_DIR/lib/modules/"
+          
+          # Show installed modules
+          echo "Installed modules:"
+          ls -la "$ROOTFS_DIR/lib/modules/"
+          
+          # Run depmod in chroot
+          echo "Running depmod to generate module dependencies..."
+          sudo mount -t proc none "$ROOTFS_DIR/proc" || true
+          sudo mount -t sysfs none "$ROOTFS_DIR/sys" || true
+          sudo mount -t devtmpfs none "$ROOTFS_DIR/dev" || true
+          
+          # Find the kernel version directory
+          KERNEL_VERSION=$(ls "$ROOTFS_DIR/lib/modules/" | head -1)
+          if [ -n "$KERNEL_VERSION" ]; then
+            echo "Running depmod for kernel version: $KERNEL_VERSION"
+            sudo chroot "$ROOTFS_DIR" depmod -a "$KERNEL_VERSION" 2>&1 || echo "depmod completed"
+          else
+            echo "No kernel modules found, skipping depmod"
+          fi
+          
+          sudo umount "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev" 2>/dev/null || true
         else
-          echo "WARNING: No modules found in /tmp/kernel_modules/lib/modules/"
-          ls -la /tmp/kernel_modules/lib/modules/ || true
+          echo "Skipping kernel modules installation (not found)"
         fi
-        
-        # Run depmod in chroot
-        sudo mount -t proc none "$ROOTFS_DIR/proc" || true
-        sudo mount -t sysfs none "$ROOTFS_DIR/sys" || true
-        sudo chroot "$ROOTFS_DIR" depmod -a 2>&1 || echo "depmod warnings are normal during cross-build"
-        sudo umount "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" 2>/dev/null || true
 
     - name: 8. Create Pure Rootfs Image
       run: |
@@ -240,6 +149,7 @@ jobs:
           ORIG_SIZE=209715200  # 200MB fallback
         fi
         
+        echo "Creating rootfs image of size: $ORIG_SIZE bytes ($((ORIG_SIZE / 1048576))MB)"
         dd if=/dev/zero of=rootfs-32-pure.img bs=1 count=0 seek=$ORIG_SIZE
         mkfs.ext4 -F -L "rootfs" rootfs-32-pure.img
         
@@ -251,23 +161,23 @@ jobs:
         
         ls -lh rootfs-32-pure.img
 
-    - name: 9. Replace Kernel and Package Final TTL
+    - name: 9. Package Final TTL
       run: |
         cp -r ttl_template/ final_package/
         cp rootfs-32-pure.img final_package/rootfs-32.img
-        cp new_uImage final_package/uImage || cp new_uImage final_package/boot/uImage || true
+        cp new_uImage final_package/uImage
         
         cd final_package
-        zip -r ../TTL-hi3798mv100-32bit-MAINLINE-Trixie-$(date +%Y%m%d).zip .
+        zip -r ../TTL-hi3798mv100-32bit-Trixie-$(date +%Y%m%d).zip .
         cd ..
         
-        ls -lh TTL-hi3798mv100-32bit-MAINLINE-Trixie-*.zip
+        ls -lh TTL-hi3798mv100-32bit-Trixie-*.zip
 
-    - name: 10. Upload Artifacts - Kernel uImage
+    - name: 10. Upload Artifacts - Complete TTL Package
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-uimage-mainline
-        path: new_uImage
+        name: ttl-package-trixie
+        path: TTL-hi3798mv100-32bit-Trixie-*.zip
         retention-days: 7
 
     - name: 11. Upload Artifacts - Rootfs Image
@@ -277,23 +187,9 @@ jobs:
         path: rootfs-32-pure.img
         retention-days: 7
 
-    - name: 12. Upload Artifacts - Complete TTL Package
+    - name: 12. Upload Artifacts - Kernel uImage
       uses: actions/upload-artifact@v4
       with:
-        name: ttl-package-mainline
-        path: TTL-hi3798mv100-32bit-MAINLINE-Trixie-*.zip
-        retention-days: 7
-
-    - name: 13. Upload Artifacts - Build Logs
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-logs-mainline
-        path: kernel_build/mainline/build.log
-        retention-days: 7
-
-    - name: 14. Upload Artifacts - Kernel Config
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-config
-        path: kernel_build/mainline/.config
+        name: kernel-uimage-6.19.0-rc3
+        path: new_uImage
         retention-days: 7
