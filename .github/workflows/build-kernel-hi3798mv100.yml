@@ -50,8 +50,8 @@ jobs:
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
              .config
 
-          # FIX 1: The correct Kconfig guard is CONFIG_ARCH_HISI (not CONFIG_ARCH_HISILICON).
-          # Check with: grep CONFIG_ARCH_HI .config
+          # FIX 1: Correct Kconfig guard is CONFIG_ARCH_HISI, not CONFIG_ARCH_HISILICON.
+          # FIX 2: DTB stem must exactly match the DTS filename (hi3798mv100-dump).
           echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb' \
             >> arch/arm/boot/dts/hisilicon/Makefile
 
@@ -60,14 +60,8 @@ jobs:
         run: |
           export ARCH=arm
           export CROSS_COMPILE=arm-linux-gnueabihf-
-          # FIX 2: Use olddefconfig to fill in missing options silently.
-          # This is correct — no change needed here.
           make olddefconfig
 
-      # FIX 3: Build kernel Image and DTBs in a single step.
-      # Splitting into separate 'make zImage' and 'make dtbs' calls is fine,
-      # but there is no reason to run two full parallel builds.
-      # Combined here for efficiency.
       - name: Build Kernel + DTB
         working-directory: ./kernel-source
         run: |
@@ -82,10 +76,6 @@ jobs:
           export CROSS_COMPILE=arm-linux-gnueabihf-
           make -j$(nproc) modules
 
-      # FIX 4: Install modules into a local staging directory so they can
-      # be uploaded as a clean artifact tree. Without INSTALL_MOD_PATH the
-      # modules install into /lib/modules on the runner, which requires sudo
-      # and makes the upload path fragile.
       - name: Install Modules
         working-directory: ./kernel-source
         run: |
@@ -96,8 +86,7 @@ jobs:
       - name: Create Bootable Image (Hisilicon)
         working-directory: ./kernel-source
         run: |
-          # FIX 5: The DTB path uses the DTS filename stem, which is
-          # hi3798mv100-dump.dtb — this was already correct in your original.
+          # FIX 3: DTB filename here must also match the DTS stem.
           cat arch/arm/boot/zImage \
               arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb \
               > zImage-dtb
@@ -107,10 +96,6 @@ jobs:
             -n "Kernel 6.x for Hi3798Mv100" \
             -d zImage-dtb uImage
 
-      # FIX 6: Upload modules from the staging directory, not lib/modules/
-      # inside the build tree (which no longer exists after modules_install
-      # redirects output). Also added .config and System.map as useful debug
-      # artifacts.
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
