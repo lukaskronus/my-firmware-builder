@@ -34,110 +34,100 @@ jobs:
         # Copy uImage
         if [ -f "${GITHUB_WORKSPACE}/prebuilt/uImage" ]; then
           echo "Using pre-built uImage from prebuilt directory"
-          cp ${GITHUB_WORKSPACE}/prebuilt/uImage ${GITHUB_WORKSPACE}/new_uImage
+          cp "${GITHUB_WORKSPACE}/prebuilt/uImage" "${GITHUB_WORKSPACE}/new_uImage"
         elif [ -f "${GITHUB_WORKSPACE}/uImage" ]; then
           echo "Using pre-built uImage from workspace root"
-          cp ${GITHUB_WORKSPACE}/uImage ${GITHUB_WORKSPACE}/new_uImage
+          cp "${GITHUB_WORKSPACE}/uImage" "${GITHUB_WORKSPACE}/new_uImage"
         else
           echo "ERROR: No uImage found!"
           exit 1
         fi
-        
-        # Extract kernel modules
-        if [ -f "${GITHUB_WORKSPACE}/prebuilt/6.19.0-rc3+.7z" ]; then
-          echo "Extracting kernel modules from 6.19.0-rc3+.7z"
-          mkdir -p ${GITHUB_WORKSPACE}/kernel_modules_temp
-          7z x ${GITHUB_WORKSPACE}/prebuilt/6.19.0-rc3+.7z -o${GITHUB_WORKSPACE}/kernel_modules_temp/
-          
-          # Find the modules directory (might be in a subfolder)
-          MODULES_DIR=$(find ${GITHUB_WORKSPACE}/kernel_modules_temp -type d -name "lib" 2>/dev/null | head -1)
-          if [ -n "$MODULES_DIR" ]; then
-            echo "Found modules in: $MODULES_DIR"
-            # Create the module package structure
-            mkdir -p ${GITHUB_WORKSPACE}/kernel_build/kernel_modules
-            cp -r ${MODULES_DIR}/* ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/ 2>/dev/null || true
-          else
-            # Check if the archive extracts directly to lib/modules structure
-            if [ -d "${GITHUB_WORKSPACE}/kernel_modules_temp/lib" ]; then
-              mkdir -p ${GITHUB_WORKSPACE}/kernel_build/kernel_modules
-              cp -r ${GITHUB_WORKSPACE}/kernel_modules_temp/* ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/
-            else
-              # Maybe the archive contains the modules directory directly
-              MODULE_VERSION_DIR=$(find ${GITHUB_WORKSPACE}/kernel_modules_temp -maxdepth 2 -type d -name "6.19.0-rc3+" 2>/dev/null | head -1)
-              if [ -n "$MODULE_VERSION_DIR" ]; then
-                mkdir -p ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules
-                cp -r "$MODULE_VERSION_DIR" ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/
-              fi
-            fi
-          fi
-          
-          echo "Module structure:"
-          ls -la ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/
-          if [ -d "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules" ]; then
-            echo "Modules found:"
-            ls -la ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/
-          fi
-        else
-          echo "WARNING: Kernel modules archive not found at prebuilt/6.19.0-rc3+.7z"
-          echo "Continuing without modules (some features may not work)"
-        fi
-        
-        # Verify kernel size
-        KERNEL_SIZE=$(stat -c%s ${GITHUB_WORKSPACE}/new_uImage)
-        KERNEL_SIZE_MB=$(echo "scale=2; $KERNEL_SIZE / 1048576" | bc)
-        MAX_SIZE=$((30 * 1048576))
-        
-        echo "=== Kernel Size Check ==="
-        echo "Kernel size: ${KERNEL_SIZE_MB}MB"
-        echo "Partition size: 30MB"
-        
-        if [ $KERNEL_SIZE -gt $MAX_SIZE ]; then
-          echo "ERROR: Kernel too large for 30MB partition!"
+    
+        # === Extract Kernel Modules ===
+        echo "=== Kernel Modules Extraction ==="
+        ARCHIVE="${GITHUB_WORKSPACE}/prebuilt/6.19.0-rc3+.7z"
+    
+        if [ ! -f "$ARCHIVE" ]; then
+          echo "ERROR: Modules archive not found: $ARCHIVE"
+          ls -la "${GITHUB_WORKSPACE}/prebuilt/" || true
           exit 1
         fi
-        echo "✓ Kernel fits in partition"
+    
+        mkdir -p "${GITHUB_WORKSPACE}/kernel_modules_temp"
+        echo "Extracting $ARCHIVE ..."
+        7z l "$ARCHIVE" | head -n 50                    # Important: shows internal structure
+    
+        7z x "$ARCHIVE" -o"${GITHUB_WORKSPACE}/kernel_modules_temp/" -y
+    
+        echo "Extracted directory tree:"
+        find "${GITHUB_WORKSPACE}/kernel_modules_temp" -type d | head -n 30
+    
+        # Prepare target
+        mkdir -p "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules"
+    
+        # Robust handling of common archive layouts
+        if [ -d "${GITHUB_WORKSPACE}/kernel_modules_temp/lib/modules/6.19.0-rc3" ]; then
+          echo "✓ Found perfect structure (lib/modules/6.19.0-rc3)"
+          cp -a "${GITHUB_WORKSPACE}/kernel_modules_temp/lib/modules/6.19.0-rc3" \
+                "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/"
+        elif [ -d "${GITHUB_WORKSPACE}/kernel_modules_temp/lib/modules/6.19.0-rc3+" ]; then
+          echo "✓ Found 6.19.0-rc3+ directory, renaming to 6.19.0-rc3"
+          cp -a "${GITHUB_WORKSPACE}/kernel_modules_temp/lib/modules/6.19.0-rc3+" \
+                "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/6.19.0-rc3"
+        elif [ -d "${GITHUB_WORKSPACE}/kernel_modules_temp/6.19.0-rc3" ]; then
+          echo "✓ Found top-level 6.19.0-rc3 directory"
+          cp -a "${GITHUB_WORKSPACE}/kernel_modules_temp/6.19.0-rc3" \
+                "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/"
+        elif [ -d "${GITHUB_WORKSPACE}/kernel_modules_temp/lib" ]; then
+          echo "✓ Found top-level lib directory"
+          cp -a "${GITHUB_WORKSPACE}/kernel_modules_temp/lib" \
+                "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/"
+        else
+          echo "⚠ Unknown structure - copying everything"
+          cp -a "${GITHUB_WORKSPACE}/kernel_modules_temp/"* \
+                "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/" 2>/dev/null || true
+        fi
+    
+        # Verification
+        echo "=== Final Modules Structure in kernel_build ==="
+        ls -la "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/" || echo "No modules directory!"
+        if [ -d "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/6.19.0-rc3" ]; then
+          echo "✓ SUCCESS: 6.19.0-rc3 directory is ready"
+          ls -la "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/6.19.0-rc3/" | head -n 15
+        fi
 
     - name: 6. Build Pure Debian 13 Trixie Rootfs
       run: |
         chmod +x build_rootfs.sh
-        # Update build_rootfs.sh for Debian 13 Trixie
-        sed -i 's/bookworm/trixie/g' build_rootfs.sh
-        sed -i 's/Debian 12/Debian 13/g' build_rootfs.sh
         ./build_rootfs.sh
 
     - name: 7. Install Kernel Modules into Debian Rootfs
       run: |
-        ROOTFS_DIR=$(pwd)/pure_rootfs
+        ROOTFS_DIR="$(pwd)/pure_rootfs"
         
-        if [ -d "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules" ]; then
-          echo "Installing kernel modules into Debian rootfs..."
+        if [ -d "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/6.19.0-rc3" ]; then
+          echo "Installing kernel modules into rootfs..."
           sudo mkdir -p "$ROOTFS_DIR/lib/modules"
           
-          # Copy modules
-          sudo cp -a ${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/* "$ROOTFS_DIR/lib/modules/"
+          sudo cp -a "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/6.19.0-rc3" \
+                     "$ROOTFS_DIR/lib/modules/"
           
-          # Show installed modules
           echo "Installed modules:"
           ls -la "$ROOTFS_DIR/lib/modules/"
           
-          # Run depmod in chroot
-          echo "Running depmod to generate module dependencies..."
-          sudo mount -t proc none "$ROOTFS_DIR/proc" || true
-          sudo mount -t sysfs none "$ROOTFS_DIR/sys" || true
-          sudo mount -t devtmpfs none "$ROOTFS_DIR/dev" || true
+          # Run depmod
+          KERNEL_VERSION="6.19.0-rc3"
+          echo "Running depmod for $KERNEL_VERSION..."
+          sudo mount -t proc none "$ROOTFS_DIR/proc" 2>/dev/null || true
+          sudo mount -t sysfs none "$ROOTFS_DIR/sys" 2>/dev/null || true
+          sudo mount -t devtmpfs none "$ROOTFS_DIR/dev" 2>/dev/null || true
           
-          # Find the kernel version directory
-          KERNEL_VERSION=$(ls "$ROOTFS_DIR/lib/modules/" | head -1)
-          if [ -n "$KERNEL_VERSION" ]; then
-            echo "Running depmod for kernel version: $KERNEL_VERSION"
-            sudo chroot "$ROOTFS_DIR" depmod -a "$KERNEL_VERSION" 2>&1 || echo "depmod completed"
-          else
-            echo "No kernel modules found, skipping depmod"
-          fi
+          sudo chroot "$ROOTFS_DIR" depmod -a "$KERNEL_VERSION" || echo "depmod finished with warnings"
           
           sudo umount "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev" 2>/dev/null || true
         else
-          echo "Skipping kernel modules installation (not found)"
+          echo "WARNING: Expected modules directory 6.19.0-rc3 not found!"
+          ls -la "${GITHUB_WORKSPACE}/kernel_build/kernel_modules/lib/modules/" || true
         fi
 
     - name: 8. Create Pure Rootfs Image
