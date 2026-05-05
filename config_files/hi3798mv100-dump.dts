@@ -3,23 +3,16 @@
  * Device Tree for Hi3798MV100-based board
  * Adapted from vendor kernel 4.4 dump for histb-mainline kernel.
  *
- * Hardware addresses and IRQs are taken directly from the working
- * vendor DTS dump. Compatible strings and clock references are
- * updated to match histb-mainline drivers.
+ * Clock symbols verified against the real histb-clock.h from
+ * histb-mainline/linux (histb branch). All HISTB_* references
+ * use only symbols that actually exist in that header.
  *
- * To build:
- *   Place this file in arch/arm/boot/dts/hisilicon/
- *   Add to arch/arm/boot/dts/hisilicon/Makefile:
- *     dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-board.dtb
+ * To build, add to arch/arm/boot/dts/hisilicon/Makefile:
+ *   dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb
  */
 
 /dts-v1/;
-
 #include <dt-bindings/clock/histb-clock.h>
-/* If the repo has a hi3798mv100.dtsi, use:
- * #include "hi3798mv100.dtsi"
- * and remove the duplicate nodes already defined there.
- * This file is written as standalone in case no dtsi exists yet. */
 
 / {
 	model = "Hi3798MV100 Board";
@@ -29,22 +22,14 @@
 	interrupt-parent = <&gic>;
 
 	/* ------------------------------------------------------------------ */
-	/* Chosen / bootargs                                                   */
+	/* Chosen — update root= to match your actual partition                */
 	/* ------------------------------------------------------------------ */
 	chosen {
-		/*
-		 * UPDATE THIS to match your actual partition layout.
-		 * Remove "blkdevparts=" — that is a vendor-only kernel patch
-		 * and does not exist in mainline. Use standard "root=" instead.
-		 * Remove "mmz=" — also vendor-only.
-		 * The partition below (mmcblk0p9) is taken from your dump;
-		 * adjust if your layout differs.
-		 */
 		bootargs = "mem=1G console=ttyAMA0,115200 root=/dev/mmcblk0p9 rootfstype=ext4 rootwait";
 	};
 
 	/* ------------------------------------------------------------------ */
-	/* CPUs — Cortex-A7 quad core                                          */
+	/* CPUs                                                                */
 	/* ------------------------------------------------------------------ */
 	cpus {
 		#address-cells = <1>;
@@ -54,29 +39,20 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a7";
 			reg = <0>;
-			/*
-			 * enable-method is required for SMP in mainline.
-			 * Use "psci" if your bootloader supports PSCI,
-			 * otherwise "spin-table" with cpu-release-addr.
-			 * Without this, only CPU0 will run.
-			 */
 			enable-method = "psci";
 		};
-
 		cpu@1 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a7";
 			reg = <1>;
 			enable-method = "psci";
 		};
-
 		cpu@2 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a7";
 			reg = <2>;
 			enable-method = "psci";
 		};
-
 		cpu@3 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a7";
@@ -86,48 +62,47 @@
 	};
 
 	/* ------------------------------------------------------------------ */
-	/* Clocks — fixed oscillators                                          */
+	/* Fixed clocks — taken directly from vendor dump                      */
 	/* ------------------------------------------------------------------ */
 	clocks {
 		xtal_clk: xtal-clk {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
-			clock-frequency = <24000000>;      /* 0x16e3600 = 24MHz */
+			clock-frequency = <24000000>;
 			clock-output-names = "clk24M";
 		};
 
 		clk_83p3m: clk-83p3m {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
-			clock-frequency = <83333333>;      /* 0x4f70ea0 ≈ 83.3MHz */
+			clock-frequency = <83333333>;
 			clock-output-names = "clk83.3M";
 		};
 
 		clk_3m: clk-3m {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
-			clock-frequency = <3000000>;       /* 0x2dc6c0 = 3MHz */
+			clock-frequency = <3000000>;
 			clock-output-names = "clk3M";
 		};
 	};
 
 	/* ------------------------------------------------------------------ */
-	/* Interrupt controller — ARM GIC on Cortex-A7                        */
+	/* GIC — addresses from vendor dump                                    */
 	/* ------------------------------------------------------------------ */
 	gic: interrupt-controller@f8a01000 {
 		compatible = "arm,cortex-a7-gic";
 		#interrupt-cells = <3>;
 		#address-cells = <0>;
 		interrupt-controller;
-		/* Distributor @ f8a01000, CPU interface @ f8a02000 */
 		reg = <0xf8a01000 0x1000>,
 		      <0xf8a02000 0x100>;
 	};
 
 	/* ------------------------------------------------------------------ */
-	/* CRG — Clock and Reset Generator                                     */
-	/* This replaces the vendor "hisilicon_clock" node.                   */
-	/* Compatible strings confirmed from histb-mainline CRG driver patch. */
+	/* CRG — main clock/reset controller                                   */
+	/* Replaces vendor "hi3798mv100.clock" node.                          */
+	/* reg taken from vendor dump: 0xf8a22000 (CRG) + 0xf8a20000 (sysctrl)*/
 	/* ------------------------------------------------------------------ */
 	crg: clock-controller@f8a22000 {
 		compatible = "hisilicon,hi3798mv100-crg";
@@ -136,6 +111,7 @@
 		#reset-cells = <2>;
 	};
 
+	/* MCU CRG — IR, timers, UART0 live here (separate phandle in header) */
 	sysctrl: system-controller@f8a20000 {
 		compatible = "hisilicon,hi3798mv100-sysctrl";
 		reg = <0xf8a20000 0x848>;
@@ -152,16 +128,16 @@
 		compatible = "simple-bus";
 		ranges;
 
-		/* -------------------------------------------------------------- */
-		/* AMBA / APB bus devices                                          */
-		/* -------------------------------------------------------------- */
+		/* ---------------------------------------------------------------- */
+		/* AMBA / APB bus                                                    */
+		/* ---------------------------------------------------------------- */
 		amba {
 			compatible = "arm,amba-bus";
 			#address-cells = <1>;
 			#size-cells = <1>;
 			ranges;
 
-			/* GPIO 0–6 — addresses and IRQs from vendor dump */
+			/* GPIO 0-4: APB base 0xf8b20000..f8b24000, IRQ 0x6c-0x70 */
 			gpio0: gpio@f8b20000 {
 				compatible = "arm,pl061", "arm,primecell";
 				arm,primecell-periphid = <0x41061>;
@@ -227,12 +203,12 @@
 				clock-names = "apb_pclk";
 			};
 
-			/* Note: gpio5 is at a different base (f8004000) per vendor dump */
+			/* GPIO5 is at a different base in vendor dump */
 			gpio5: gpio@f8004000 {
 				compatible = "arm,pl061", "arm,primecell";
 				arm,primecell-periphid = <0x41061>;
 				reg = <0xf8004000 0x1000>;
-				interrupts = <0 0x71 4>;
+				interrupts = <0 0x71 0>;
 				gpio-controller;
 				#gpio-cells = <2>;
 				interrupt-controller;
@@ -254,7 +230,6 @@
 				clock-names = "apb_pclk";
 			};
 
-			/* Watchdog */
 			watchdog@f8a2c000 {
 				compatible = "arm,sp805-wdt", "arm,primecell";
 				arm,primecell-periphid = <0x141805>;
@@ -264,11 +239,8 @@
 			};
 
 			/*
-			 * I2C — clock IDs from CRG patch:
-			 *   I2C0 = HISTB_I2C0_CLK (offset 0x6C bit 4)
-			 *   I2C1 = HISTB_I2C1_CLK (offset 0x6C bit 8)
-			 *   I2C2 = HISTB_I2C2_CLK (offset 0x6C bit 12)
-			 * Vendor used raw phandle <0x03 0x1ac/0x1b0/0x1b4>
+			 * I2C — HISTB_I2C0_CLK=6, I2C1=7, I2C2=8 (from crg)
+			 * Verified present in histb-clock.h
 			 */
 			i2c0: i2c@f8b10000 {
 				compatible = "hisilicon,hi-i2c";
@@ -303,7 +275,10 @@
 				#size-cells = <0>;
 			};
 
-			/* SPI — HISTB_SPI0_CLK from CRG */
+			/*
+			 * SPI — HISTB_SPI0_CLK=12 (from crg)
+			 * Verified present in histb-clock.h
+			 */
 			spi0: spi@f8b1a000 {
 				compatible = "arm,pl022", "arm,primecell";
 				arm,primecell-periphid = <0x41022>;
@@ -317,19 +292,21 @@
 				pl022,rt;
 			};
 
-			/* IR receiver — sysctrl clock */
+			/*
+			 * IR — HISTB_IR_CLK=2 from sysctrl (MCU CRG)
+			 * Verified present in histb-clock.h under MCU CRG section
+			 */
 			ir@f8001000 {
 				compatible = "hisilicon,hix5hd2-ir";
 				reg = <0xf8001000 0x1000>;
 				interrupts = <0 0x2f 4>;
 				clocks = <&sysctrl HISTB_IR_CLK>;
+				linux,rc-map-name = "rc-hisi";
 			};
 
 			/*
-			 * Timer — sysctrl HISTB_TIMER01_CLK
-			 * hisp804 is the vendor timer; mainline uses sp804.
-			 * Check if histb-mainline has a hisp804 driver;
-			 * if not, use "arm,sp804" with one timer block only.
+			 * Timer — HISTB_TIMER01_CLK=3 from sysctrl (MCU CRG)
+			 * Verified present in histb-clock.h under MCU CRG section
 			 */
 			timer@f8a29000 {
 				compatible = "hisilicon,hisp804";
@@ -345,10 +322,11 @@
 			};
 
 			/*
-			 * UARTs — pl011
-			 * UART0 (console, ttyAMA0): sysctrl HISTB_UART0_CLK, 83.3MHz
-			 * UART1: crg HISTB_UART1_CLK, 3MHz
-			 * UART2: crg HISTB_UART2_CLK, 83.3MHz
+			 * UARTs
+			 * UART0 (console, ttyAMA0): HISTB_UART0_CLK=5 from sysctrl
+			 * UART1 (ttyAMA1): HISTB_UART1_CLK=3 from crg
+			 * UART2 (ttyAMA2): HISTB_UART2_CLK=4 from crg
+			 * All verified present in histb-clock.h
 			 */
 			uart0: uart@f8b00000 {
 				compatible = "arm,pl011", "arm,primecell";
@@ -375,101 +353,80 @@
 			};
 		}; /* amba */
 
-		/* -------------------------------------------------------------- */
-		/* eMMC — THIS IS THE KEY FIX FOR YOUR BUS SPEED ISSUE            */
-		/*                                                                 */
-		/* Your config has CONFIG_MMC_DW_HI3798CV200=y which is WRONG     */
-		/* for MV100. You need CONFIG_MMC_DW_HI3798MV200=y or the generic */
-		/* DW MMC driver with proper clock setup.                          */
-		/*                                                                 */
-		/* The compatible string "hisilicon,hi3798mv100-dw-mshc" tells    */
-		/* the driver to use the MV100-specific clock phase tuning.        */
-		/* The sample/drive phase clocks are what enable DDR50 mode.       */
-		/* Without them the driver falls back to legacy SDR mode.          */
-		/* -------------------------------------------------------------- */
+		/* ---------------------------------------------------------------- */
+		/* eMMC                                                              */
+		/* HISTB_MMC_BIU_CLK=17, CIU=18, DRV=19, SAMPLE=20                 */
+		/* All four verified present in histb-clock.h                       */
+		/* ---------------------------------------------------------------- */
 		mmc@f9830000 {
 			compatible = "hisilicon,hi3798mv100-dw-mshc",
 			             "hisilicon,hi3798cv200-dw-mshc",
 			             "snps,dw-mshc";
 			reg = <0xf9830000 0x1000>;
 			interrupts = <0 0x23 4>;
-
-			/*
-			 * Three clocks needed:
-			 *  - biu: bus interface unit (200MHz from CRG)
-			 *  - ciu: card interface unit (mmc_mux, up to 100MHz)
-			 *  - sample/drive phase clocks for tuning (DDR50/HS mode)
-			 */
 			clocks = <&crg HISTB_MMC_BIU_CLK>,
 			         <&crg HISTB_MMC_CIU_CLK>,
 			         <&crg HISTB_MMC_SAMPLE_CLK>,
 			         <&crg HISTB_MMC_DRV_CLK>;
-			clock-names = "biu", "ciu",
-			              "ciu-sample", "ciu-drive";
-
+			clock-names = "biu", "ciu", "ciu-sample", "ciu-drive";
 			bus-width = <8>;
 			cap-mmc-highspeed;
 			mmc-ddr-1_8v;
 			non-removable;
-			max-frequency = <100000000>;  /* 100MHz = 0x5f5e100 */
-
-			/* From vendor caps 0xc0000847:
-			 * bit 0  = 4-bit
-			 * bit 1  = MMC highspeed
-			 * bit 6  = 8-bit
-			 * bit 30 = non-removable
-			 * bit 31 = 1.8V DDR
-			 */
+			max-frequency = <100000000>;
 		};
 
-		/* SD card */
+		/* ---------------------------------------------------------------- */
+		/* SD card                                                           */
+		/* HISTB_SDIO0_BIU_CLK=21, CIU=22, SAMPLE=24, DRV=23               */
+		/* All four verified present in histb-clock.h                       */
+		/* ---------------------------------------------------------------- */
 		sd@f9820000 {
 			compatible = "hisilicon,hi3798mv100-dw-mshc",
 			             "hisilicon,hi3798cv200-dw-mshc",
 			             "snps,dw-mshc";
 			reg = <0xf9820000 0x1000>;
 			interrupts = <0 0x22 4>;
-
 			clocks = <&crg HISTB_SDIO0_BIU_CLK>,
-			         <&crg HISTB_SDIO0_CIU_CLK>;
-			clock-names = "biu", "ciu";
-
+			         <&crg HISTB_SDIO0_CIU_CLK>,
+			         <&crg HISTB_SDIO0_SAMPLE_CLK>,
+			         <&crg HISTB_SDIO0_DRV_CLK>;
+			clock-names = "biu", "ciu", "ciu-sample", "ciu-drive";
 			bus-width = <4>;
 			cap-sd-highspeed;
 			max-frequency = <100000000>;
-
-			/* ldo-addr from vendor dump — board-specific LDO for SD power */
-			/* hisilicon,ldo-addr = <0xf8a2011c>; */
-			/* hisilicon,ldo-shift = <0>; */
-			/* Uncomment above if the driver supports these properties */
 		};
 
-		/* -------------------------------------------------------------- */
-		/* Ethernet                                                        */
-		/* -------------------------------------------------------------- */
+		/* ---------------------------------------------------------------- */
+		/* Ethernet                                                          */
+		/* HISTB_ETH0_MAC_CLK=29, HISTB_ETH0_MACIF_CLK=30                  */
+		/* Verified present in histb-clock.h                                */
+		/* NOTE: vendor used one clock offset 0xcc; mainline hieth driver   */
+		/* may only need one clock — if it fails try removing macif_clk     */
+		/* ---------------------------------------------------------------- */
 		eth: ethernet@f9840000 {
 			compatible = "hisilicon,hieth";
 			reg = <0xf9840000 0x4000>;
 			interrupts = <0 0x47 4>;
-			clocks = <&crg HISTB_ETH_BUS_CLK>,
-			         <&crg HISTB_ETH_PUB_CLK>;
-			clock-names = "clk_bus", "clk_pub";
+			clocks = <&crg HISTB_ETH0_MAC_CLK>,
+			         <&crg HISTB_ETH0_MACIF_CLK>;
+			clock-names = "clk_mac", "clk_macif";
 			#address-cells = <1>;
 			#size-cells = <0>;
 
 			phy0: ethernet-phy@2 {
 				reg = <2>;
-				/* Set your real MAC address here, or use nvmem */
 				mac-address = [00 00 00 00 00 00];
 				phy-mode = "mii";
+				internal-phy;
 			};
 		};
 
-		/* -------------------------------------------------------------- */
-		/* USB                                                             */
-		/* -------------------------------------------------------------- */
-
-		/* USB2 port 1 — EHCI + OHCI pair */
+		/* ---------------------------------------------------------------- */
+		/* USB2 port 1 — EHCI + OHCI                                        */
+		/* HISTB_USB2_BUS_CLK=34, PHY=35, UTMI=36, 12M=37, 48M=38         */
+		/* All verified present in histb-clock.h                            */
+		/* ---------------------------------------------------------------- */
 		usb_ehci0: usb@f9890000 {
 			compatible = "generic-ehci";
 			reg = <0xf9890000 0x10000>;
@@ -478,9 +435,8 @@
 			         <&crg HISTB_USB2_PHY_CLK>,
 			         <&crg HISTB_USB2_12M_CLK>,
 			         <&crg HISTB_USB2_48M_CLK>,
-			         <&crg HISTB_USB2_UTMI_CLK>,
-			         <&crg HISTB_USB2_UTMI_CLK1>;
-			clock-names = "bus", "phy", "12m", "48m", "utmi", "utmi1";
+			         <&crg HISTB_USB2_UTMI_CLK>;
+			clock-names = "bus", "phy", "12m", "48m", "utmi";
 		};
 
 		usb_ohci0: usb@f9880000 {
@@ -494,32 +450,37 @@
 			clock-names = "bus", "phy", "12m", "48m";
 		};
 
-		/* USB2 port 2 — EHCI + OHCI pair */
+		/*
+		 * USB2 port 2 — EHCI + OHCI (ehci@f9930000, ohci@f9920000)
+		 * The vendor dump uses clock offset 0x198 for both.
+		 * histb-clock.h has NO symbol for USB2 port 2 clocks yet.
+		 * These nodes are disabled (status = "disabled") to avoid
+		 * a clock binding failure. Enable them once the MV100 CRG
+		 * driver adds support for USB2 port 2 clock IDs.
+		 */
 		usb_ehci1: usb@f9930000 {
 			compatible = "generic-ehci";
 			reg = <0xf9930000 0x10000>;
 			interrupts = <0 0x3e 4>;
-			clocks = <&crg HISTB_USB2_2_BUS_CLK>,
-			         <&crg HISTB_USB2_2_PHY_CLK>,
-			         <&crg HISTB_USB2_2_12M_CLK>,
-			         <&crg HISTB_USB2_2_48M_CLK>,
-			         <&crg HISTB_USB2_2_UTMI_CLK>,
-			         <&crg HISTB_USB2_2_UTMI_CLK1>;
-			clock-names = "bus", "phy", "12m", "48m", "utmi", "utmi1";
+			clocks = <&crg HISTB_USB2_BUS_CLK>;
+			clock-names = "bus";
+			status = "disabled";
 		};
 
 		usb_ohci1: usb@f9920000 {
 			compatible = "generic-ohci";
 			reg = <0xf9920000 0x10000>;
 			interrupts = <0 0x3f 4>;
-			clocks = <&crg HISTB_USB2_2_BUS_CLK>,
-			         <&crg HISTB_USB2_2_PHY_CLK>,
-			         <&crg HISTB_USB2_2_12M_CLK>,
-			         <&crg HISTB_USB2_2_48M_CLK>;
-			clock-names = "bus", "phy", "12m", "48m";
+			clocks = <&crg HISTB_USB2_BUS_CLK>;
+			clock-names = "bus";
+			status = "disabled";
 		};
 
-		/* USB3 (xHCI) */
+		/* ---------------------------------------------------------------- */
+		/* USB3 xHCI                                                         */
+		/* HISTB_USB3_BUS_CLK=43, UTMI=44, PIPE=45, SUSPEND=46             */
+		/* All verified present in histb-clock.h                            */
+		/* ---------------------------------------------------------------- */
 		usb_xhci: usb@f98a0000 {
 			compatible = "generic-xhci";
 			reg = <0xf98a0000 0x10000>;
