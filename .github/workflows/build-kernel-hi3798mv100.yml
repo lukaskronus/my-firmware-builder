@@ -176,11 +176,13 @@ jobs:
       - name: Create Bootable Image
         working-directory: ./kernel-source
         run: |
+          # Create appended DTB image
           cat arch/arm/boot/zImage \
-              arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb \
-              > zImage-dtb
-          mkimage -A arm -O linux -T kernel -C none \
-            -a 0x1FFFFC0 -e 0x1FFFFC0 \
+            arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb \
+            > zImage-dtb
+          # Use gzip compression and standard load address
+          mkimage -A arm -O linux -T kernel -C gzip \
+            -a 0x40008000 -e 0x40008000 \
             -n "Kernel 6.x for Hi3798Mv100" \
             -d zImage-dtb uImage
 
