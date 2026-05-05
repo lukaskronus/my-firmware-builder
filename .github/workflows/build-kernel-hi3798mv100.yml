@@ -88,16 +88,16 @@ jobs:
           echo "=== histb-clock.h contents ==="
           cat kernel-source/include/dt-bindings/clock/histb-clock.h || echo "FILE NOT FOUND"
           
-#      - name: Copy DTS & Config
-#        run: |
-#          cd kernel-source
-#          mkdir -p arch/arm/boot/dts/hisilicon
-#          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.dts" \
-#             arch/arm/boot/dts/hisilicon/
-#          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
-#             .config
-#          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb' \
-#            >> arch/arm/boot/dts/hisilicon/Makefile
+      - name: Copy DTS & Config
+        run: |
+          cd kernel-source
+          mkdir -p arch/arm/boot/dts/hisilicon
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.dts" \
+             arch/arm/boot/dts/hisilicon/
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
+             .config
+          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb' \
+            >> arch/arm/boot/dts/hisilicon/Makefile
 
       - name: Kernel Configuration
         working-directory: ./kernel-source
