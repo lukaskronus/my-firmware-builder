@@ -6,7 +6,7 @@ on:
       kernel_branch:
         description: 'Branch kernel source'
         required: true
-        default: 'histb'
+        default: 'wip/hi3798mx'
 
 jobs:
   build:
@@ -87,21 +87,6 @@ jobs:
         run: |
           echo "=== histb-clock.h contents ==="
           cat kernel-source/include/dt-bindings/clock/histb-clock.h || echo "FILE NOT FOUND"
-      
-      - name: Setup Custom DTS (Exclusive)
-        run: |
-          cd kernel-source/arch/arm/boot/dts/hisilicon
-    
-          # Remove ALL existing DTS files
-          rm -f hi3798mv100*.dts
-    
-          # Copy ONLY your DTS (rename to standard name if needed)
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.dts" \
-           hi3798mv100.dts
-    
-          # Clear the Makefile's hi3798mv100 entries and add yours
-          sed -i '/dtb-.*hi3798mv100.*\.dtb/d' Makefile
-          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100.dtb' >> Makefile
           
 #      - name: Copy DTS & Config
 #        run: |
