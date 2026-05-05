@@ -1,4 +1,4 @@
-name: Build Kernel for Hi3798Mv100
+name: Kernel for Hi3798Mv100
 
 on:
   workflow_dispatch:
@@ -89,9 +89,14 @@ jobs:
           # Copy config
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/deepseek/hi3798mv100-deep.config" .config
           
-          # Copy  DTS file
+          # Copy DTS file
           if [ -f "${GITHUB_WORKSPACE}/myrepo/config_files/deepseek/hi3798mv100-deep.dts" ]; then
             cp "${GITHUB_WORKSPACE}/myrepo/config_files/deepseek/hi3798mv100-deep.dts" \
+               arch/arm/boot/dts/hisilicon/
+          fi
+
+          if [ -f "${GITHUB_WORKSPACE}/myrepo/config_files/deepseek/hi3798mv100.dtsi" ]; then
+            cp "${GITHUB_WORKSPACE}/myrepo/config_files/deepseek/hi3798mv100.dtsi" \
                arch/arm/boot/dts/hisilicon/
           fi
           
