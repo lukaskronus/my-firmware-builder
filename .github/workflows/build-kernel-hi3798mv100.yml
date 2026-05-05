@@ -1,4 +1,4 @@
-name: Build Kernel for Hi3798Mv100
+name: Kernel for Hi3798Mv100
 
 on:
   workflow_dispatch:
@@ -45,61 +45,14 @@ jobs:
           CONFIG_HASH=$(sha256sum myrepo/config_files/hi3798mv100-dump.config | cut -d' ' -f1)
           echo "CONFIG_HASH=${CONFIG_HASH}" >> $GITHUB_ENV
 
-      - name: Setup ccache
-        run: |
-          ccache --max-size=5G
-          ccache --set-config=compression=true
-          ccache --set-config=compression_level=6
-          ccache --set-config=cache_dir=$HOME/.ccache
-          echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
-          echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
-          echo "CCACHE_MAXSIZE=5G" >> $GITHUB_ENV
-          echo "CCACHE_SLOPPINESS=time_macros,include_file_mtime,file_macro" >> $GITHUB_ENV
-          echo "CC=ccache arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
-
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-arm-${{ env.KERNEL_VERSION }}-${{ env.CONFIG_HASH }}-${{ runner.os }}-${{ github.event.inputs.kernel_branch }}-${{ env.KERNEL_COMMIT }}
-          restore-keys: |
-            ccache-arm-${{ env.KERNEL_VERSION }}-${{ env.CONFIG_HASH }}-${{ runner.os }}-${{ github.event.inputs.kernel_branch }}-
-            ccache-arm-${{ env.KERNEL_VERSION }}-${{ env.CONFIG_HASH }}-${{ runner.os }}-
-            ccache-arm-${{ env.KERNEL_VERSION }}-${{ env.CONFIG_HASH }}-
-            ccache-arm-${{ env.KERNEL_VERSION }}-
-            ccache-arm-
-
       - name: Show ccache stats (before build)
         run: ccache --show-stats
 
-      - name: Copy DTS & Config
+      - name: Copy Config file
         run: |
           cd kernel-source
-          mkdir -p arch/arm/boot/dts/hisilicon
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.dts" \
-             arch/arm/boot/dts/hisilicon/
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
              .config
-          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb' \
-            >> arch/arm/boot/dts/hisilicon/Makefile
-
-          # Verify the Makefile entry was added correctly
-          echo "=== Last 3 lines of hisilicon Makefile ==="
-          tail -3 arch/arm/boot/dts/hisilicon/Makefile
-
-      - name: Kernel Configuration
-        working-directory: ./kernel-source
-        run: |
-          export ARCH=arm
-          export CROSS_COMPILE=arm-linux-gnueabihf-
-          make olddefconfig
-          ./scripts/config --disable CONFIG_THUMB2_KERNEL
-          ./scripts/config --enable CONFIG_ARM_APPENDED_DTB
-          ./scripts/config --enable CONFIG_ARM_ATAG_DTB_COMPAT
-          ./scripts/config --enable CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER
-          make olddefconfig
-          echo "=== Verifying critical config options ==="
-          grep -E "THUMB2_KERNEL|ARM_APPENDED_DTB|ATAG_DTB_COMPAT" .config
 
       - name: Build Kernel
         working-directory: ./kernel-source
@@ -111,25 +64,6 @@ jobs:
           echo "=== Image size ==="
           ls -lh arch/arm/boot/Image
           ccache --show-stats
-      
-      - name: Build DTB
-        working-directory: ./kernel-source
-        run: |
-          export ARCH=arm
-          export CROSS_COMPILE=arm-linux-gnueabihf-
-
-          # Build only the hisilicon DTBs so errors surface clearly
-          make dtbs
-
-          # Explicitly verify our DTB was produced — fail loudly if not
-          echo "=== Checking DTB was built ==="
-          ls -lh arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb
-          if [ ! -f arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb ]; then
-            echo "ERROR: hi3798mv100-dump.dtb was not built!"
-            echo "Check DTS syntax errors above."
-            exit 1
-          fi
-          echo "DTB built successfully"
 
       - name: Build Modules
         working-directory: ./kernel-source
@@ -151,16 +85,11 @@ jobs:
           echo "=== Module staging size after cleanup ==="
           du -sh ./modules-staging
 
-      - name: Show final ccache stats
-        run: |
-          ccache --show-stats
-          du -sh ~/.ccache
-
       - name: Create Bootable Image
         working-directory: ./kernel-source
         run: |
           cat arch/arm/boot/Image \
-              arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb \
+              arch/arm/boot/dts/hisilicon/hi3798mv100-ec6108v9c.dtb \
               > Image-dtb
           
           mkimage -A arm -O linux -T kernel -C none \
@@ -174,11 +103,6 @@ jobs:
           name: kernel-hi3798mv100-${{ github.run_number }}-${{ env.KERNEL_VERSION }}
           path: |
             kernel-source/arch/arm/boot/Image
-            kernel-source/Image-dtb
             kernel-source/uImage
-            kernel-source/hi_kernel-mv100-32.bin
-            kernel-source/arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb
             kernel-source/modules-staging/
-            kernel-source/.config
-            kernel-source/System.map
-          retention-days: 30
+          retention-days: 10
