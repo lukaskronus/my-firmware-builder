@@ -29,7 +29,8 @@ jobs:
             libssl-dev libncurses5-dev \
             libelf-dev dwarves \
             pkg-config libglib2.0-dev \
-            u-boot-tools git
+            u-boot-tools git \
+            ccache
 
       - name: Clone Kernel Source
         run: |
@@ -37,8 +38,31 @@ jobs:
             -b ${{ github.event.inputs.kernel_branch }} \
             --depth=1 kernel-source
           cd kernel-source
+          echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
           echo "Building from commit: $(git rev-parse HEAD)"
-      
+
+      # Cache ccache directory.
+      # Key includes the kernel version so a new upstream commit gets a
+      # fresh cache instead of reusing stale object files from an older tree.
+      # A restore-keys fallback still lets us warm-start from the previous
+      # cache when only a few files changed.
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-arm-${{ env.KERNEL_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-arm-${{ env.KERNEL_VERSION }}-
+            ccache-arm-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2G
+          ccache --zero-stats
+          # Prepend ccache wrappers so every arm-linux-gnueabihf-gcc call
+          # goes through the cache transparently.
+          echo "/usr/lib/ccache" >> $GITHUB_PATH
+
       - name: Show Available Clock IDs
         run: |
           echo "=== histb-clock.h contents ==="
@@ -55,8 +79,6 @@ jobs:
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
              .config
 
-          # FIX 1: Correct Kconfig guard is CONFIG_ARCH_HISI, not CONFIG_ARCH_HISILICON.
-          # FIX 2: DTB stem must exactly match the DTS filename (hi3798mv100-dump).
           echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb' \
             >> arch/arm/boot/dts/hisilicon/Makefile
 
@@ -88,28 +110,29 @@ jobs:
           export CROSS_COMPILE=arm-linux-gnueabihf-
           make modules_install INSTALL_MOD_PATH=./modules-staging
 
-      - name: Clean up unnecessary files (build/source)
-        working-directory: ./kernel-source
-        run: |
-          echo "Before cleanup size:"
-          du -sh modules-staging/lib/modules/* || true
-          
-          rm -rf modules-staging/lib/modules/*/build
-          rm -rf modules-staging/lib/modules/*/source
-          
-          echo "After cleanup size:"
-          du -sh modules-staging/lib/modules/* || true
+          # Remove the build/ and source/ symlinks inside the installed module
+          # tree — they point back into the kernel build directory on the runner
+          # and are only needed for building out-of-tree modules, not for
+          # running the firmware. Removing them saves significant artifact space.
+          find ./modules-staging -maxdepth 4 \
+            \( -name "build" -o -name "source" \) \
+            -type l -delete
 
-      - name: Create Bootable Image (Hisilicon)
+          echo "=== Module staging size after cleanup ==="
+          du -sh ./modules-staging
+
+      - name: Print ccache stats
+        run: ccache --show-stats
+
+      - name: Create Bootable Image
         working-directory: ./kernel-source
         run: |
-          # FIX 3: DTB filename here must also match the DTS stem.
           cat arch/arm/boot/zImage \
               arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb \
               > zImage-dtb
 
           mkimage -A arm -O linux -T kernel -C none \
-            -a 0x2000000 -e 0x2000000 \
+            -a 0x1FFFFC0 -e 0x1FFFFC0 \
             -n "Kernel 6.x for Hi3798Mv100" \
             -d zImage-dtb uImage
 
