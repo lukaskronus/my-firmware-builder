@@ -72,6 +72,21 @@ jobs:
       - name: Show ccache stats (before build)
         run: ccache --show-stats
 
+      - name: Copy DTS & Config
+        run: |
+          cd kernel-source
+          mkdir -p arch/arm/boot/dts/hisilicon
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.dts" \
+             arch/arm/boot/dts/hisilicon/
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
+             .config
+          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb' \
+            >> arch/arm/boot/dts/hisilicon/Makefile
+
+          # Verify the Makefile entry was added correctly
+          echo "=== Last 3 lines of hisilicon Makefile ==="
+          tail -3 arch/arm/boot/dts/hisilicon/Makefile
+
       - name: Kernel Configuration
         working-directory: ./kernel-source
         run: |
@@ -96,6 +111,25 @@ jobs:
           echo "=== Image size ==="
           ls -lh arch/arm/boot/Image
           ccache --show-stats
+      
+      - name: Build DTB
+        working-directory: ./kernel-source
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+
+          # Build only the hisilicon DTBs so errors surface clearly
+          make dtbs
+
+          # Explicitly verify our DTB was produced — fail loudly if not
+          echo "=== Checking DTB was built ==="
+          ls -lh arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb
+          if [ ! -f arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb ]; then
+            echo "ERROR: hi3798mv100-dump.dtb was not built!"
+            echo "Check DTS syntax errors above."
+            exit 1
+          fi
+          echo "DTB built successfully"
 
       - name: Build Modules
         working-directory: ./kernel-source
@@ -125,6 +159,10 @@ jobs:
       - name: Create Bootable Image
         working-directory: ./kernel-source
         run: |
+          cat arch/arm/boot/Image \
+              arch/arm/boot/dts/hisilicon/hi3798mv100-dump.dtb \
+              > Image-dtb
+          
           mkimage -A arm -O linux -T kernel -C none \
             -a 0x1FFFFC0 -e 0x1FFFFC0 \
             -n "Kernel 6.x for Hi3798Mv100" \
