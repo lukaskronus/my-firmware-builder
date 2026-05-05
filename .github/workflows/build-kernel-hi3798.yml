@@ -34,7 +34,7 @@ jobs:
 
       - name: Clone Kernel Source
         run: |
-          git clone https://github.com/histb-deep/linux.git \
+          git clone "https://github.com/histb-mainline/linux.git" \
             -b ${{ github.event.inputs.kernel_branch }} \
             --depth=1 kernel-source
           cd kernel-source
@@ -42,16 +42,8 @@ jobs:
           echo "KERNEL_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "Building from commit: $(git rev-parse HEAD)"
           cd ..
-          CONFIG_HASH=$(sha256sum myrepo/config_files/hi3798mv100-dump.config | cut -d' ' -f1)
+          CONFIG_HASH=$(sha256sum myrepo/config_files/deepseek/hi3798mv100-deep.config | cut -d' ' -f1)
           echo "CONFIG_HASH=${CONFIG_HASH}" >> $GITHUB_ENV
-
-      - name: Verify DTS filename
-        run: |
-          if [ -f myrepo/config_files/hi3798mv100-vendor.dts.txt ]; then
-            echo "Renaming .dts.txt to .dts"
-            cp myrepo/config_files/hi3798mv100-vendor.dts.txt myrepo/config_files/hi3798mv100-deep.dts
-          fi
-          ls -la myrepo/config_files/
 
       - name: Setup ccache
         run: |
