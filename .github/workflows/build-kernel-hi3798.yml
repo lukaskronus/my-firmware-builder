@@ -1,0 +1,227 @@
+name: Build Kernel for Hi3798Mv100
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: 'Branch kernel source'
+        required: true
+        default: 'histb'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout My Repository
+        uses: actions/checkout@v4
+        with:
+          path: myrepo
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex make \
+            gcc-arm-linux-gnueabihf \
+            g++-arm-linux-gnueabihf \
+            device-tree-compiler \
+            libssl-dev libncurses5-dev \
+            libelf-dev dwarves \
+            pkg-config libglib2.0-dev \
+            u-boot-tools git \
+            ccache
+
+      - name: Clone Kernel Source
+        run: |
+          git clone https://github.com/histb-deep/linux.git \
+            -b ${{ github.event.inputs.kernel_branch }} \
+            --depth=1 kernel-source
+          cd kernel-source
+          echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
+          echo "KERNEL_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "Building from commit: $(git rev-parse HEAD)"
+          cd ..
+          CONFIG_HASH=$(sha256sum myrepo/config_files/hi3798mv100-dump.config | cut -d' ' -f1)
+          echo "CONFIG_HASH=${CONFIG_HASH}" >> $GITHUB_ENV
+
+      - name: Verify DTS filename
+        run: |
+          if [ -f myrepo/config_files/hi3798mv100-vendor.dts.txt ]; then
+            echo "Renaming .dts.txt to .dts"
+            cp myrepo/config_files/hi3798mv100-vendor.dts.txt myrepo/config_files/hi3798mv100-deep.dts
+          fi
+          ls -la myrepo/config_files/
+
+      - name: Setup ccache
+        run: |
+          ccache --max-size=5G
+          ccache --set-config=compression=true
+          ccache --set-config=compression_level=6
+          ccache --set-config=cache_dir=$HOME/.ccache
+          echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
+          echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=5G" >> $GITHUB_ENV
+          echo "CCACHE_SLOPPINESS=time_macros,include_file_mtime,file_macro" >> $GITHUB_ENV
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-arm-${{ env.KERNEL_VERSION }}-${{ env.CONFIG_HASH }}-${{ runner.os }}-${{ github.event.inputs.kernel_branch }}-${{ env.KERNEL_COMMIT }}
+          restore-keys: |
+            ccache-arm-${{ env.KERNEL_VERSION }}-${{ env.CONFIG_HASH }}-${{ runner.os }}-${{ github.event.inputs.kernel_branch }}-
+            ccache-arm-${{ env.KERNEL_VERSION }}-${{ env.CONFIG_HASH }}-${{ runner.os }}-
+            ccache-arm-${{ env.KERNEL_VERSION }}-${{ env.CONFIG_HASH }}-
+            ccache-arm-${{ env.KERNEL_VERSION }}-
+            ccache-arm-
+
+      - name: Show ccache stats (before build)
+        run: ccache --show-stats
+
+      - name: Copy DTS & Config
+        run: |
+          cd kernel-source
+          
+          # Ensure hisilicon directory exists
+          mkdir -p arch/arm/boot/dts/hisilicon
+          
+          # Copy config
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/deepseek/hi3798mv100-deep.config" .config
+          
+          # Copy  DTS file
+          if [ -f "${GITHUB_WORKSPACE}/myrepo/config_files/deepseek/hi3798mv100-deep.dts" ]; then
+            cp "${GITHUB_WORKSPACE}/myrepo/config_files/deepseek/hi3798mv100-deep.dts" \
+               arch/arm/boot/dts/hisilicon/
+          fi
+          
+          # Add to Makefile if not already there
+          if ! grep -q "hi3798mv100-deep.dtb" arch/arm/boot/dts/hisilicon/Makefile; then
+            echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-deep.dtb' \
+              >> arch/arm/boot/dts/hisilicon/Makefile
+          fi
+          
+          # Verify the Makefile entry was added correctly
+          echo "=== Added DTB target ==="
+          tail -3 arch/arm/boot/dts/hisilicon/Makefile
+
+      - name: Kernel Configuration
+        working-directory: ./kernel-source
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          export CC="ccache arm-linux-gnueabihf-gcc"
+          
+          make olddefconfig
+          
+          # Disable THUMB2 for ARM mode kernel
+          ./scripts/config --disable CONFIG_THUMB2_KERNEL
+          
+          # Enable appended DTB support
+          ./scripts/config --enable CONFIG_ARM_APPENDED_DTB
+          ./scripts/config --enable CONFIG_ARM_ATAG_DTB_COMPAT
+          ./scripts/config --enable CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER
+          
+          # Enable Hisilicon clock driver
+          ./scripts/config --enable CONFIG_COMMON_CLK_HI3798
+          
+          make olddefconfig
+          
+          echo "=== Verifying critical config options ==="
+          grep -E "THUMB2_KERNEL|ARM_APPENDED_DTB|ATAG_DTB_COMPAT|MMC_DW_HI3798MV200|COMMON_CLK_HI3798" .config
+
+      - name: Build Kernel
+        working-directory: ./kernel-source
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          export CC="ccache arm-linux-gnueabihf-gcc"
+          
+          ccache --zero-stats
+          make -j$(nproc) Image
+          
+          echo "=== Image size ==="
+          ls -lh arch/arm/boot/Image
+          
+      - name: Build DTBS
+        working-directory: ./kernel-source
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          
+          # Build only the hisilicon DTBs
+          make hisilicon/hi3798mv100-deep.dtb
+          
+          # Explicitly verify our DTB was produced
+          echo "=== Checking DTB was built ==="
+          if [ ! -f arch/arm/boot/dts/hisilicon/hi3798mv100-deep.dtb ]; then
+            echo "ERROR: hi3798mv100-deep.dtb was not built!"
+            echo "Check DTS syntax errors above."
+            exit 1
+          fi
+          echo "DTB built successfully"
+          ls -lh arch/arm/boot/dts/hisilicon/hi3798mv100-deep.dtb
+          
+          # Decompile for verification
+          dtc -I dtb -O dts arch/arm/boot/dts/hisilicon/hi3798mv100-deep.dtb \
+            -o hi3798mv100-deep-verify.dts
+
+      - name: Build Modules
+        working-directory: ./kernel-source
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          export CC="ccache arm-linux-gnueabihf-gcc"
+          
+          make -j$(nproc) modules
+          ccache --show-stats
+
+      - name: Install Modules
+        working-directory: ./kernel-source
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          
+          make modules_install INSTALL_MOD_PATH=./modules-staging
+          find ./modules-staging -maxdepth 4 \
+            \( -name "build" -o -name "source" \) \
+            -type l -delete
+          echo "=== Module staging size after cleanup ==="
+          du -sh ./modules-staging
+
+      - name: Show final ccache stats
+        run: |
+          ccache --show-stats
+          du -sh ~/.ccache
+
+      - name: Create Bootable Image
+        working-directory: ./kernel-source
+        run: |
+          # Create appended DTB image
+          cat arch/arm/boot/Image \
+              arch/arm/boot/dts/hisilicon/hi3798mv100-deep.dtb \
+              > Image-dtb
+          
+          # Create uImage for U-Boot
+          mkimage -A arm -O linux -T kernel -C none \
+            -a 0x1FFFFC0 -e 0x1FFFFC0 \
+            -n "Kernel 6.x for Hi3798Mv100" \
+            -d Image-dtb uImage
+          
+          echo "=== Final artifacts ==="
+          ls -lh Image-dtb uImage
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-hi3798mv100-${{ github.run_number }}-${{ env.KERNEL_VERSION }}
+          path: |
+            kernel-source/arch/arm/boot/Image
+            kernel-source/Image-dtb
+            kernel-source/uImage
+            kernel-source/arch/arm/boot/dts/hisilicon/hi3798mv100-deep.dtb
+            kernel-source/hi3798mv100-deep-verify.dts
+            kernel-source/modules-staging/
+            kernel-source/.config
+            kernel-source/System.map
+          retention-days: 30
