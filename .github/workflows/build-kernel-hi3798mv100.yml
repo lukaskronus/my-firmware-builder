@@ -38,6 +38,11 @@ jobs:
             --depth=1 kernel-source
           cd kernel-source
           echo "Building from commit: $(git rev-parse HEAD)"
+      
+      - name: Show Available Clock IDs
+        run: |
+          echo "=== histb-clock.h contents ==="
+          cat kernel-source/include/dt-bindings/clock/histb-clock.h || echo "FILE NOT FOUND"
 
       - name: Copy DTS & Config
         run: |
