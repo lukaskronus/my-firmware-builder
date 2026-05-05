@@ -31,7 +31,15 @@ jobs:
             pkg-config libglib2.0-dev \
             u-boot-tools git \
             ccache
-
+      
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: ${{ runner.os }}-kernel-hi3798mv100-${{ github.event.inputs.kernel_branch }}
+          max-size: 2G
+          save: true
+          verbose: true
+      
       - name: Clone Kernel Source
         run: |
           git clone https://github.com/histb-mainline/linux.git \
