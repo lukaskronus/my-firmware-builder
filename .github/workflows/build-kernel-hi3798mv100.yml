@@ -87,17 +87,32 @@ jobs:
         run: |
           echo "=== histb-clock.h contents ==="
           cat kernel-source/include/dt-bindings/clock/histb-clock.h || echo "FILE NOT FOUND"
-
-      - name: Copy DTS & Config
+      
+      - name: Setup Custom DTS (Exclusive)
         run: |
-          cd kernel-source
-          mkdir -p arch/arm/boot/dts/hisilicon
+          cd kernel-source/arch/arm/boot/dts/hisilicon
+    
+          # Remove ALL existing DTS files
+          rm -f hi3798mv100*.dts
+    
+          # Copy ONLY your DTS (rename to standard name if needed)
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.dts" \
-             arch/arm/boot/dts/hisilicon/
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
-             .config
-          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb' \
-            >> arch/arm/boot/dts/hisilicon/Makefile
+           hi3798mv100.dts
+    
+          # Clear the Makefile's hi3798mv100 entries and add yours
+          sed -i '/dtb-.*hi3798mv100.*\.dtb/d' Makefile
+          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100.dtb' >> Makefile
+          
+#      - name: Copy DTS & Config
+#        run: |
+#          cd kernel-source
+#          mkdir -p arch/arm/boot/dts/hisilicon
+#          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.dts" \
+#             arch/arm/boot/dts/hisilicon/
+#          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
+#             .config
+#          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-dump.dtb' \
+#            >> arch/arm/boot/dts/hisilicon/Makefile
 
       - name: Kernel Configuration
         working-directory: ./kernel-source
