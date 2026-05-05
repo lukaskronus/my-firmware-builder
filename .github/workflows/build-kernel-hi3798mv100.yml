@@ -88,6 +88,18 @@ jobs:
           export CROSS_COMPILE=arm-linux-gnueabihf-
           make modules_install INSTALL_MOD_PATH=./modules-staging
 
+      - name: Clean up unnecessary files (build/source)
+        working-directory: ./kernel-source
+        run: |
+          echo "Before cleanup size:"
+          du -sh modules-staging/lib/modules/* || true
+          
+          rm -rf modules-staging/lib/modules/*/build
+          rm -rf modules-staging/lib/modules/*/source
+          
+          echo "After cleanup size:"
+          du -sh modules-staging/lib/modules/* || true
+
       - name: Create Bootable Image (Hisilicon)
         working-directory: ./kernel-source
         run: |
