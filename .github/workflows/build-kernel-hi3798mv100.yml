@@ -41,11 +41,6 @@ jobs:
           echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
           echo "Building from commit: $(git rev-parse HEAD)"
 
-      # Cache ccache directory.
-      # Key includes the kernel version so a new upstream commit gets a
-      # fresh cache instead of reusing stale object files from an older tree.
-      # A restore-keys fallback still lets us warm-start from the previous
-      # cache when only a few files changed.
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -59,8 +54,6 @@ jobs:
         run: |
           ccache --max-size=2G
           ccache --zero-stats
-          # Prepend ccache wrappers so every arm-linux-gnueabihf-gcc call
-          # goes through the cache transparently.
           echo "/usr/lib/ccache" >> $GITHUB_PATH
 
       - name: Show Available Clock IDs
@@ -87,7 +80,24 @@ jobs:
         run: |
           export ARCH=arm
           export CROSS_COMPILE=arm-linux-gnueabihf-
+
+          # Run olddefconfig first to fill in all new symbols with defaults.
           make olddefconfig
+
+          # FIX: olddefconfig on the histb-mainline tree enables
+          # CONFIG_THUMB2_KERNEL=y by default for this SoC. Your U-Boot
+          # (Fastboot 3.3.0) is too old to perform a Thumb2 kernel entry —
+          # it jumps to the entry point in ARM mode, hitting an undefined
+          # instruction crash immediately ("*** irq: undefined instruction",
+          # Mode UK8_26). Force it off after olddefconfig so it can't flip back.
+          ./scripts/config --disable CONFIG_THUMB2_KERNEL
+
+          # Re-run olddefconfig to resolve any dependencies that
+          # THUMB2_KERNEL=n may have changed (e.g. THUMB2_EFI).
+          make olddefconfig
+
+          echo "=== Verifying THUMB2_KERNEL is disabled ==="
+          grep THUMB2_KERNEL .config
 
       - name: Build Kernel + DTB
         working-directory: ./kernel-source
@@ -110,10 +120,8 @@ jobs:
           export CROSS_COMPILE=arm-linux-gnueabihf-
           make modules_install INSTALL_MOD_PATH=./modules-staging
 
-          # Remove the build/ and source/ symlinks inside the installed module
-          # tree — they point back into the kernel build directory on the runner
-          # and are only needed for building out-of-tree modules, not for
-          # running the firmware. Removing them saves significant artifact space.
+          # Remove build/ and source/ symlinks — they point into the runner's
+          # build tree and are not needed on the device firmware.
           find ./modules-staging -maxdepth 4 \
             \( -name "build" -o -name "source" \) \
             -type l -delete
