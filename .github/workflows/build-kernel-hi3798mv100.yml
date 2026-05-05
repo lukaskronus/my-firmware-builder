@@ -61,6 +61,22 @@ jobs:
           cd kernel-source
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
              .config
+      
+      - name: Kernel Configuration
+        working-directory: ./kernel-source
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          make olddefconfig
+          ./scripts/config --enable CONFIG_OF
+          ./scripts/config --enable CONFIG_OF_FLATTREE
+          ./scripts/config --disable CONFIG_THUMB2_KERNEL
+          ./scripts/config --enable CONFIG_ARM_APPENDED_DTB
+          ./scripts/config --enable CONFIG_ARM_ATAG_DTB_COMPAT
+          ./scripts/config --enable CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER
+          make olddefconfig
+          echo "=== Verifying critical config options ==="
+          grep -E "THUMB2_KERNEL|ARM_APPENDED_DTB|ATAG_DTB_COMPAT" .config
 
       - name: Build Kernel
         working-directory: ./kernel-source
