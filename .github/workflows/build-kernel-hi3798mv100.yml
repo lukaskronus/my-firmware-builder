@@ -56,11 +56,21 @@ jobs:
       - name: Show ccache stats (before build)
         run: ccache --show-stats
 
-      - name: Copy Config file
+      - name: Copy DTS & Config
         run: |
           cd kernel-source
+          mkdir -p arch/arm/boot/dts/hisilicon
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-a312.dts" \
+             arch/arm/boot/dts/hisilicon/
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
              .config
+          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-a312.dtb' \
+            >> arch/arm/boot/dts/hisilicon/Makefile
+ 
+          # Verify the Makefile entry was added correctly
+          echo "=== Last 3 lines of hisilicon Makefile ==="
+          tail -3 arch/arm/boot/dts/hisilicon/Makefile
+
       
       - name: Kernel Configuration
         working-directory: ./kernel-source
@@ -84,9 +94,14 @@ jobs:
           export ARCH=arm
           export CROSS_COMPILE=arm-linux-gnueabihf-
           ccache --zero-stats
-          make -j$(nproc) Image
+          make -j$(nproc) Image dtbs
+          
           echo "=== Image size ==="
           ls -lh arch/arm/boot/Image
+
+          echo "=== DTB files ==="
+          ls -lh arch/arm/boot/dts/hisilicon/*.dtb
+          
           ccache --show-stats
 
       - name: Build Modules
@@ -113,7 +128,7 @@ jobs:
         working-directory: ./kernel-source
         run: |
           cat arch/arm/boot/Image \
-              arch/arm/boot/dts/hisilicon/hi3798mv100-ec6108v9c.dtb \
+              arch/arm/boot/dts/hisilicon/hi3798mv100-a312.dtb \
               > Image-dtb
           
           mkimage -A arm -O linux -T kernel -C none \
