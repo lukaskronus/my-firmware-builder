@@ -119,7 +119,7 @@ jobs:
         working-directory: ./kernel-source
         run: |
           cat arch/arm/boot/Image \
-              arch/arm/boot/dts/hisilicon/hi3798mv100-ec6108v9c.dtb.dtb \
+              arch/arm/boot/dts/hisilicon/hi3798mv100-ec6108v9c.dtb \
               > Image-dtb
           
           mkimage -A arm -O linux -T kernel -C none \
