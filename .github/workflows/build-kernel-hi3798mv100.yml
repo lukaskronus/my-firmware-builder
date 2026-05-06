@@ -20,26 +20,25 @@ jobs:
 
       - name: Install Build Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
             bc bison flex make \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
             device-tree-compiler \
             libssl-dev libncurses5-dev \
             libelf-dev dwarves \
-            pkg-config libglib2.0-dev \
             u-boot-tools git \
             ccache
-      
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1
         with:
           key: ${{ runner.os }}-kernel-hi3798mv100-${{ github.event.inputs.kernel_branch }}
           max-size: 2G
           save: true
-          verbose: true
-      
+          verbose: false
+
       - name: Clone Kernel Source
         run: |
           git clone https://github.com/histb-mainline/linux.git \
@@ -47,73 +46,45 @@ jobs:
             --depth=1 kernel-source
           cd kernel-source
           echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
-          echo "KERNEL_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
-          echo "Building from commit: $(git rev-parse HEAD)"
-          cd ..
-          CONFIG_HASH=$(sha256sum myrepo/config_files/hi3798mv100-dump.config | cut -d' ' -f1)
-          echo "CONFIG_HASH=${CONFIG_HASH}" >> $GITHUB_ENV
+          echo "KERNEL_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
-      - name: Show ccache stats (before build)
-        run: ccache --show-stats
-
-      - name: Copy Config
-        run: |
-          cd kernel-source
-          mkdir -p arch/arm/boot/dts/hisilicon
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" \
-             .config
-      
-      - name: Kernel Configuration
+      - name: Configure Kernel
         working-directory: ./kernel-source
+        env:
+          ARCH: arm
+          CROSS_COMPILE: ccache arm-linux-gnueabihf-
         run: |
-          export ARCH=arm
-          export CROSS_COMPILE=arm-linux-gnueabihf-
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" .config
+          ./scripts/config \
+            --enable  CONFIG_OF \
+            --enable  CONFIG_OF_FLATTREE \
+            --disable CONFIG_THUMB2_KERNEL \
+            --enable  CONFIG_ARM_APPENDED_DTB \
+            --enable  CONFIG_ARM_ATAG_DTB_COMPAT \
+            --enable  CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER
           make olddefconfig
-          ./scripts/config --enable CONFIG_OF
-          ./scripts/config --enable CONFIG_OF_FLATTREE
-          ./scripts/config --disable CONFIG_THUMB2_KERNEL
-          ./scripts/config --enable CONFIG_ARM_APPENDED_DTB
-          ./scripts/config --enable CONFIG_ARM_ATAG_DTB_COMPAT
-          ./scripts/config --enable CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER
-          make olddefconfig
-          echo "=== Verifying critical config options ==="
-          grep -E "THUMB2_KERNEL|ARM_APPENDED_DTB|ATAG_DTB_COMPAT" .config
 
-      - name: Build Kernel
+      - name: Build Kernel, DTBs and Modules
         working-directory: ./kernel-source
+        env:
+          ARCH: arm
+          CROSS_COMPILE: ccache arm-linux-gnueabihf-
         run: |
-          export ARCH=arm
-          export CROSS_COMPILE=arm-linux-gnueabihf-
-          ccache --zero-stats
-          make -j$(nproc) zImage dtbs
-          
-          echo "=== Image size ==="
-          ls -lh arch/arm/boot/Image
-
-          echo "=== DTB files ==="
-          ls -lh arch/arm/boot/dts/hisilicon/*.dtb
-          
-          ccache --show-stats
-
-      - name: Build Modules
-        working-directory: ./kernel-source
-        run: |
-          export ARCH=arm
-          export CROSS_COMPILE=arm-linux-gnueabihf-
-          make -j$(nproc) modules
-          ccache --show-stats
+          make -j$(nproc) zImage dtbs modules \
+            KCFLAGS="-pipe" \
+            KBUILD_BUILD_TIMESTAMP="" \
+            KBUILD_BUILD_USER=ci \
+            KBUILD_BUILD_HOST=github
 
       - name: Install Modules
         working-directory: ./kernel-source
+        env:
+          ARCH: arm
+          CROSS_COMPILE: ccache arm-linux-gnueabihf-
         run: |
-          export ARCH=arm
-          export CROSS_COMPILE=arm-linux-gnueabihf-
           make modules_install INSTALL_MOD_PATH=./modules-staging
-          find ./modules-staging -maxdepth 4 \
-            \( -name "build" -o -name "source" \) \
-            -type l -delete
-          echo "=== Module staging size after cleanup ==="
-          du -sh ./modules-staging
+          find ./modules-staging \( -name "build" -o -name "source" \) -type l -delete
+          ccache --show-stats
 
       - name: Create Bootable Image
         working-directory: ./kernel-source
@@ -121,10 +92,9 @@ jobs:
           cat arch/arm/boot/zImage \
               arch/arm/boot/dts/hisilicon/hi3798mv100-ec6108v9c.dtb \
               > zImage-dtb
-          
           mkimage -A arm -O linux -T kernel -C none \
             -a 0x1FFFFC0 -e 0x1FFFFC0 \
-            -n "Kernel 6.x for Hi3798Mv100" \
+            -n "Kernel ${{ env.KERNEL_VERSION }} (${{ env.KERNEL_COMMIT }})" \
             -d zImage-dtb uImage
 
       - name: Upload Artifacts
@@ -132,7 +102,7 @@ jobs:
         with:
           name: kernel-hi3798mv100-${{ github.run_number }}-${{ env.KERNEL_VERSION }}
           path: |
-            kernel-source/arch/arm/boot/Image
+            kernel-source/arch/arm/boot/zImage
             kernel-source/uImage
             kernel-source/modules-staging/
           retention-days: 10
