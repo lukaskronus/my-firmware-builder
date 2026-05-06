@@ -60,8 +60,8 @@ jobs:
             --enable  CONFIG_OF_FLATTREE \
             --disable CONFIG_THUMB2_KERNEL \
             --enable  CONFIG_ARM_APPENDED_DTB \
-            --enable  CONFIG_ARM_ATAG_DTB_COMPAT \
-            --enable  CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER
+            --disable  CONFIG_ARM_ATAG_DTB_COMPAT \
+            --disable  CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER
           make olddefconfig
 
       - name: Build Kernel, DTBs and Modules
