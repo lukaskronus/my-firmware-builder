@@ -55,13 +55,6 @@ jobs:
           CROSS_COMPILE: ccache arm-linux-gnueabihf-
         run: |
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" .config
-          ./scripts/config \
-            --enable  CONFIG_OF \
-            --enable  CONFIG_OF_FLATTREE \
-            --disable CONFIG_THUMB2_KERNEL \
-            --enable  CONFIG_ARM_APPENDED_DTB \
-            --disable  CONFIG_ARM_ATAG_DTB_COMPAT \
-            --disable  CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER
           make olddefconfig
 
       - name: Build Kernel, DTBs and Modules
