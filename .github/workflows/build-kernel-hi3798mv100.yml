@@ -54,7 +54,7 @@ jobs:
           ARCH: arm
           CROSS_COMPILE: ccache arm-linux-gnueabihf-
         run: |
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" .config
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-a312.config" .config
           make olddefconfig
       
       - name: Copy DTS files
