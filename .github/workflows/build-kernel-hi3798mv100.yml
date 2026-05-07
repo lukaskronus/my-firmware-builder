@@ -56,6 +56,11 @@ jobs:
         run: |
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" .config
           make olddefconfig
+      
+      - name: Patch clk-hix5hd2
+        working-directory: ./kernel-source
+        run: |
+          grep -rl "remove_new" drivers/clk/hisilicon/ | xargs sed -i 's/\.remove_new\s*=/.remove =/'
 
       - name: Build Kernel, DTBs and Modules
         working-directory: ./kernel-source
