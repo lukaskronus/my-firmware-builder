@@ -9,7 +9,7 @@ on:
 
 env:
   ARMBIAN_REPO:   https://github.com/SLAzurin/build-armbian-custom.git
-  ARMBIAN_BRANCH: s8xx
+  ARMBIAN_BRANCH: s8xx-2025-02-27
   KERNEL_REPO:    https://github.com/xdarklight/linux.git
   KERNEL_BRANCH:  meson-mx-integration-6.20-20251223
 
@@ -42,7 +42,7 @@ jobs:
         sudo apt-get install -y \
           git build-essential bc bison flex libssl-dev \
           gcc-arm-linux-gnueabihf \
-          u-boot-tools \
+          u-boot-tools device-tree-compiler \
           qemu-user-static \
           debootstrap \
           debian-archive-keyring \
