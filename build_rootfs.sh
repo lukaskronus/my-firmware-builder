@@ -1,101 +1,162 @@
 #!/bin/bash
 set -e
-echo "=== Building clean Debian 13 root filesystem (TTL) ==="
 
-# 1. Prepare working directory
-ROOTFS_DIR=$(pwd)/pure_rootfs
+# Cleanup trap - unmount everything if script exits for any reason
+ROOTFS_DIR="$(pwd)/pure_rootfs"
+cleanup() {
+    echo "--- Cleaning up mounts ---"
+    sudo umount -lf "$ROOTFS_DIR/dev/pts" 2>/dev/null || true
+    sudo umount -lf "$ROOTFS_DIR/dev"     2>/dev/null || true
+    sudo umount -lf "$ROOTFS_DIR/sys"     2>/dev/null || true
+    sudo umount -lf "$ROOTFS_DIR/proc"    2>/dev/null || true
+}
+trap cleanup EXIT
+
+echo "=== Building Debian 13 (Trixie) rootfs for Hi3798MV100 ==="
+
+# ── 1. Prepare working directory ────────────────────────────────────────────
 sudo rm -rf "$ROOTFS_DIR"
 mkdir -p "$ROOTFS_DIR"
 
-# 2. Create Debian 13 (Trixie) base system with debootstrap
-echo "Creating Debian 13 (Trixie) armhf root filesystem with debootstrap..."
-sudo debootstrap --arch=armhf --foreign --variant=minbase \
-  --include=systemd,systemd-sysv,dbus,ifupdown,net-tools,iputils-ping,openssh-server,ssh,sudo,vim-tiny,wget,curl,cron,rsyslog,isc-dhcp-client,locales \
-  trixie "$ROOTFS_DIR" http://deb.debian.org/debian/
+# ── 2. First stage debootstrap ───────────────────────────────────────────────
+# Only include packages needed for first boot here.
+# openssh-server, sudo etc. are added inside chroot to avoid duplication.
+echo "--- Stage 1: debootstrap ---"
+sudo debootstrap \
+    --arch=armhf \
+    --foreign \
+    --variant=minbase \
+    --include=systemd,systemd-sysv,dbus \
+    trixie "$ROOTFS_DIR" http://deb.debian.org/debian/
 
-# 3. Prepare chroot environment
-echo "Preparing chroot environment..."
+# ── 3. Prepare chroot environment ────────────────────────────────────────────
+echo "--- Preparing chroot environment ---"
 sudo cp /usr/bin/qemu-arm-static "$ROOTFS_DIR/usr/bin/"
-sudo cp /etc/resolv.conf "$ROOTFS_DIR/etc/"
+sudo cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
 
-# Mount virtual filesystems
-sudo mount -t proc /proc "$ROOTFS_DIR/proc"
-sudo mount -t sysfs /sys "$ROOTFS_DIR/sys"
-sudo mount -o bind /dev "$ROOTFS_DIR/dev"
-sudo mount -o bind /dev/pts "$ROOTFS_DIR/dev/pts"
+sudo mount -t proc  /proc        "$ROOTFS_DIR/proc"
+sudo mount -t sysfs /sys         "$ROOTFS_DIR/sys"
+sudo mount -o bind  /dev         "$ROOTFS_DIR/dev"
+sudo mount -o bind  /dev/pts     "$ROOTFS_DIR/dev/pts"
 
-# 4. Create chroot configuration script
-CHROOT_SCRIPT="/tmp/chroot_install.sh"
-sudo cat > "$CHROOT_SCRIPT" << 'INNER_EOF'
-#!/bin/bash
+# ── 4. Second stage + configuration inside chroot ────────────────────────────
+echo "--- Stage 2: debootstrap + configuration ---"
+sudo chroot "$ROOTFS_DIR" /bin/bash << 'CHROOT_EOF'
 set -e
 export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C
 
-# Configure Debian repositories for Trixie (you can change to a faster mirror if needed)
+# Complete debootstrap second stage
+/debootstrap/debootstrap --second-stage
+
+# ── Apt sources ──────────────────────────────────────────────────────────────
 cat > /etc/apt/sources.list << 'SOURCES'
 deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
 SOURCES
 
-apt-get update
-apt-get upgrade -y
+apt-get update -qq
+apt-get upgrade -y -q
 
-# Basic system configuration
+# ── Install packages ─────────────────────────────────────────────────────────
+# Note: no initramfs-tools - kernel mounts rootfs directly via bootargs
+apt-get install -y -q \
+    kmod \
+    sudo \
+    nano \
+    vim-tiny \
+    curl \
+    wget \
+    ca-certificates \
+    openssh-server \
+    ifupdown \
+    net-tools \
+    iputils-ping \
+    isc-dhcp-client \
+    cron \
+    rsyslog \
+    locales \
+    htop \
+    binutils \
+    bsdmainutils \
+    apt-utils \
+    e2fsprogs
+
+# ── Hostname and hosts ───────────────────────────────────────────────────────
 echo "debian" > /etc/hostname
-echo -e "127.0.0.1\tlocalhost\n127.0.1.1\tdebian" > /etc/hosts
-ln -sf /usr/share/zoneinfo/Asia/Ho_Chi_Minh /etc/localtime
-echo "root:1234" | chpasswd
-sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+cat > /etc/hosts << 'HOSTS'
+127.0.0.1   localhost
+127.0.1.1   debian
+HOSTS
 
-# Create /etc/fstab
+# ── Timezone ─────────────────────────────────────────────────────────────────
+ln -sf /usr/share/zoneinfo/Asia/Ho_Chi_Minh /etc/localtime
+echo "Asia/Ho_Chi_Minh" > /etc/timezone
+
+# ── Root password ────────────────────────────────────────────────────────────
+echo "root:1234" | chpasswd
+
+# ── SSH ──────────────────────────────────────────────────────────────────────
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+systemctl enable ssh
+
+# ── fstab ────────────────────────────────────────────────────────────────────
 cat > /etc/fstab << 'FSTAB'
-# /etc/fstab: static file system information
-/dev/mmcblk0p9 / ext4 defaults,noatime,errors=remount-ro 0 1
-proc /proc proc defaults 0 0
-sysfs /sys sysfs defaults 0 0
-tmpfs /tmp tmpfs defaults,noatime,nosuid,size=100M 0 0
-tmpfs /var/tmp tmpfs defaults,noatime,nosuid,size=50M 0 0
+# /etc/fstab
+/dev/mmcblk0p9  /       ext4    defaults,noatime,errors=remount-ro  0 1
+proc            /proc   proc    defaults                             0 0
+sysfs           /sys    sysfs   defaults                             0 0
+tmpfs           /tmp    tmpfs   defaults,noatime,nosuid,size=100M    0 0
+tmpfs           /var/tmp tmpfs  defaults,noatime,nosuid,size=50M     0 0
 FSTAB
 
-# Network configuration (DHCP on eth0)
+# ── Network: DHCP on eth0 ────────────────────────────────────────────────────
 mkdir -p /etc/network/interfaces.d
-echo -e "auto eth0\niface eth0 inet dhcp" > /etc/network/interfaces.d/eth0
+cat > /etc/network/interfaces.d/eth0 << 'ETH'
+auto eth0
+iface eth0 inet dhcp
+ETH
 
-# Enable serial console for USB-UART (ttyAMA0)
-echo "T0:23:respawn:/sbin/getty -L ttyAMA0 115200 vt100" >> /etc/inittab
+# ── Serial console (systemd, NOT inittab) ────────────────────────────────────
+# ttyAMA0 is the PL011 UART on Hi3798MV100
+systemctl enable serial-getty@ttyAMA0.service
 
-# Enable necessary modules
-apt-get install -y initramfs-tools kmod sudo nano curl ca-certificates openssh-server htop binutils bsdmainutils apt-utils
-update-initramfs -u -k all || true
+# ── Locale ───────────────────────────────────────────────────────────────────
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen
+echo "LANG=en_US.UTF-8" > /etc/default/locale
 
-# Cleanup
-apt-get autoremove -y
+# ── First boot resize service ─────────────────────────────────────────────────
+# Automatically expands the ext4 filesystem to fill mmcblk0p9 on first boot
+cat > /etc/systemd/system/resize-rootfs.service << 'SERVICE'
+[Unit]
+Description=Resize root filesystem to fill partition
+After=local-fs.target
+ConditionPathExists=/etc/resize-rootfs-pending
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/resize2fs /dev/mmcblk0p9
+ExecStartPost=/bin/rm -f /etc/resize-rootfs-pending
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+touch /etc/resize-rootfs-pending
+systemctl enable resize-rootfs.service
+
+# ── Cleanup ──────────────────────────────────────────────────────────────────
+apt-get autoremove -y -q
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 rm -f /usr/bin/qemu-arm-static
 
-echo "✅ Debian configuration inside chroot completed"
-INNER_EOF
+echo "✅ Chroot configuration complete"
+CHROOT_EOF
 
-sudo chmod +x "$CHROOT_SCRIPT"
-sudo cp "$CHROOT_SCRIPT" "$ROOTFS_DIR/tmp/"
-
-# 5. Run the chroot second stage and then your script
-echo "Executing second stage debootstrap and configuration..."
-# First, complete the debootstrap installation
-sudo chroot "$ROOTFS_DIR" /debootstrap/debootstrap --second-stage
-
-# Now run your custom script
-sudo chroot "$ROOTFS_DIR" /bin/bash -c "/tmp/chroot_install.sh"
-
-# 6. Unmount virtual filesystems
-sudo umount -lf "$ROOTFS_DIR/dev/pts" 2>/dev/null || true
-sudo umount -lf "$ROOTFS_DIR/dev" 2>/dev/null || true
-sudo umount -lf "$ROOTFS_DIR/sys" 2>/dev/null || true
-sudo umount -lf "$ROOTFS_DIR/proc" 2>/dev/null || true
-
-echo "=== Clean Debian 13 root filesystem build completed ==="
-echo "Rootfs location: $ROOTFS_DIR"
-echo "Default root password: root123  (Please change it immediately after first boot!)"
+echo "=== Rootfs build complete ==="
+echo "Location : $ROOTFS_DIR"
+echo "Root password : 1234  (change immediately after first boot)"

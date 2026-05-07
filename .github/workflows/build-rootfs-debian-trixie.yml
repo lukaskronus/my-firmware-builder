@@ -1,0 +1,175 @@
+name: Build Pure TTL Package with Pre-built Kernel (6.19.0-rc3+)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+    - name: 1. Checkout Code
+      uses: actions/checkout@v4
+
+    - name: 2. Install Dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          qemu-user-static debootstrap e2fsprogs zip \
+          u-boot-tools p7zip-full
+
+    - name: 3. Download and Extract Original TTL Package
+      run: |
+        wget --no-check-certificate -q -c \
+          "https://node4.histb.com:9088/update/system/TTL-hi3798mv100-32bit.zip" \
+          -O original_ttl.zip
+        mkdir -p ttl_template
+        unzip -q original_ttl.zip -d ttl_template/
+        echo "TTL template contents:"
+        ls -la ttl_template/
+
+    - name: 4. Setup Pre-built Kernel and Modules
+      run: |
+        # ── uImage ────────────────────────────────────────────────────────────
+        if [ -f "${GITHUB_WORKSPACE}/prebuilt/uImage-6.19.0-fpt-a312" ]; then
+          cp "${GITHUB_WORKSPACE}/prebuilt/uImage-6.19.0-fpt-a312" new_uImage
+        elif [ -f "${GITHUB_WORKSPACE}/uImage-6.19.0-fpt-a312" ]; then
+          cp "${GITHUB_WORKSPACE}/uImage-6.19.0-fpt-a312" new_uImage
+        else
+          echo "ERROR: No uImage found in prebuilt/ or workspace root"
+          exit 1
+        fi
+        mkimage -l new_uImage
+
+        # ── Kernel modules ────────────────────────────────────────────────────
+        ARCHIVE="${GITHUB_WORKSPACE}/prebuilt/6.19.0-rc3+.7z"
+        if [ ! -f "$ARCHIVE" ]; then
+          echo "ERROR: Modules archive not found: $ARCHIVE"
+          exit 1
+        fi
+
+        mkdir -p kernel_modules_temp
+        7z x "$ARCHIVE" -o"kernel_modules_temp/" -y -bso0
+
+        echo "Extracted structure:"
+        find kernel_modules_temp -type d | head -20
+
+        # Find the modules directory regardless of archive layout
+        # Keep the exact version string 6.19.0-rc3+ to match the running kernel
+        MODULES_DEST="kernel_build/lib/modules"
+        mkdir -p "$MODULES_DEST"
+
+        for candidate in \
+          "kernel_modules_temp/lib/modules/6.19.0-rc3+" \
+          "kernel_modules_temp/lib/modules/6.19.0-rc3" \
+          "kernel_modules_temp/6.19.0-rc3+" \
+          "kernel_modules_temp/6.19.0-rc3" \
+          "kernel_modules_temp/lib/modules" \
+          "kernel_modules_temp/lib"
+        do
+          if [ -d "$candidate" ]; then
+            echo "Found modules at: $candidate"
+            # Always install as 6.19.0-rc3+ to match running kernel uname -r
+            if [[ "$candidate" == */6.19.0-rc3 ]] && [[ "$candidate" != */6.19.0-rc3+ ]]; then
+              cp -a "$candidate" "${MODULES_DEST}/6.19.0-rc3+"
+            elif [[ "$candidate" == "kernel_modules_temp/lib/modules" ]]; then
+              cp -a "$candidate"/. "$MODULES_DEST/"
+            elif [[ "$candidate" == "kernel_modules_temp/lib" ]]; then
+              cp -a "$candidate/modules"/. "$MODULES_DEST/" 2>/dev/null || \
+              cp -a "$candidate"/. "kernel_build/"
+            else
+              cp -a "$candidate" "$MODULES_DEST/"
+            fi
+            break
+          fi
+        done
+
+        echo "Final modules structure:"
+        ls -la "$MODULES_DEST/"
+
+    - name: 5. Build Debian 13 Trixie Rootfs
+      run: |
+        chmod +x build_rootfs.sh
+        ./build_rootfs.sh
+
+    - name: 6. Install Kernel Modules into Rootfs
+      run: |
+        ROOTFS_DIR="$(pwd)/pure_rootfs"
+        MODULES_SRC="kernel_build/lib/modules"
+
+        # Find the installed module directory
+        KVER=$(ls "$MODULES_SRC" | grep "6.19" | head -1)
+        if [ -z "$KVER" ]; then
+          echo "ERROR: No kernel modules found in $MODULES_SRC"
+          ls -la "$MODULES_SRC" || true
+          exit 1
+        fi
+        echo "Installing modules for kernel: $KVER"
+
+        sudo mkdir -p "$ROOTFS_DIR/lib/modules"
+        sudo cp -a "$MODULES_SRC/$KVER" "$ROOTFS_DIR/lib/modules/"
+
+        # Run depmod inside chroot using exact kernel version string
+        sudo mount -t proc  none "$ROOTFS_DIR/proc"
+        sudo mount -t sysfs none "$ROOTFS_DIR/sys"
+        sudo chroot "$ROOTFS_DIR" depmod -a "$KVER" || echo "depmod finished"
+        sudo umount "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys"
+
+        echo "Installed modules:"
+        ls -la "$ROOTFS_DIR/lib/modules/"
+
+    - name: 7. Create Rootfs Image
+      run: |
+        # 512MB image - resize-rootfs.service will expand to full partition size on first boot
+        IMAGE_SIZE=$((512 * 1024 * 1024))
+        echo "Creating ${IMAGE_SIZE} byte (512MB) rootfs image"
+
+        dd if=/dev/zero of=rootfs-32-pure.img bs=1M count=512
+        mkfs.ext4 -F -L "rootfs" rootfs-32-pure.img
+
+        mkdir -p temp_mount
+        sudo mount -o loop rootfs-32-pure.img temp_mount
+        sudo cp -a pure_rootfs/. temp_mount/
+        sync
+        sudo umount temp_mount
+        rmdir temp_mount
+
+        ls -lh rootfs-32-pure.img
+
+    - name: 8. Package Final TTL
+      run: |
+        cp -r ttl_template/ final_package/
+        cp rootfs-32-pure.img final_package/rootfs-32.img
+        cp new_uImage final_package/uImage
+
+        DATE=$(date +%Y%m%d)
+        ZIP_NAME="TTL-hi3798mv100-32bit-Trixie-${DATE}.zip"
+
+        cd final_package
+        zip -r "../${ZIP_NAME}" .
+        cd ..
+
+        echo "Final package:"
+        ls -lh "${ZIP_NAME}"
+
+    - name: 9. Upload TTL Package
+      uses: actions/upload-artifact@v4
+      with:
+        name: ttl-package-trixie
+        path: TTL-hi3798mv100-32bit-Trixie-*.zip
+        retention-days: 7
+
+    - name: 10. Upload Rootfs Image
+      uses: actions/upload-artifact@v4
+      with:
+        name: rootfs-image-trixie
+        path: rootfs-32-pure.img
+        retention-days: 7
+
+    - name: 11. Upload Kernel uImage
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-uimage-6.19.0-rc3
+        path: new_uImage
+        retention-days: 7
