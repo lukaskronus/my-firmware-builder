@@ -146,7 +146,19 @@ jobs:
           cp lib/functions/rootfs/rootfs-create.sh.bak lib/functions/rootfs/rootfs-create.sh
           exit 1
         }
-
+    
+    - name: Remove foreign host binary from BSP source
+      run: |
+        cd armbian-build
+        # Remove the x86-64 dynamic linker that erroneously ended up in the BSP
+        find packages/bsp/ -name 'ld-linux-x86-64.so.2' -delete
+        # Double-check that it's gone
+        if find packages/bsp/ -name 'ld-linux-x86-64.so.2' | grep -q .; then
+          echo "ERROR: x86-64 file still present in BSP source"
+          exit 1
+        fi
+        echo "BSP source cleaned"
+    
     - name: Build Armbian base image
       run: |
         cd armbian-build
