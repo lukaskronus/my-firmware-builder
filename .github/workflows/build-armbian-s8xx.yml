@@ -129,6 +129,24 @@ jobs:
         sudo dpkg -i /tmp/keyring.deb
         rm /tmp/keyring.deb
 
+    - name: Patch rootfs-create.sh to extend SHA-1 acceptance
+      run: |
+        cd armbian-build
+        cp lib/functions/rootfs/rootfs-create.sh lib/functions/rootfs/rootfs-create.sh.bak
+        sed -i '/^[[:space:]]*display_alert "Updating package list"/i \
+        # Workaround: extend SHA-1 acceptance for Armbian repos signed with SHA-1\n \
+        mkdir -p "${SDCARD}/etc/crypto-policies/back-ends"\n \
+        cat <<EOF > "${SDCARD}/etc/crypto-policies/back-ends/apt-sequoia.config"\n \
+        [hash_algorithms]\n \
+        sha1.second_preimage_resistance = 2030-01-01\n \
+        sha1.collision_resistance = 2030-01-01\n \
+        EOF' lib/functions/rootfs/rootfs-create.sh
+        grep -B2 -A5 'apt-sequoia.config' lib/functions/rootfs/rootfs-create.sh || {
+          echo "ERROR: Patch failed! Restoring backup."
+          cp lib/functions/rootfs/rootfs-create.sh.bak lib/functions/rootfs/rootfs-create.sh
+          exit 1
+        }
+
     - name: Build Armbian base image
       run: |
         cd armbian-build
