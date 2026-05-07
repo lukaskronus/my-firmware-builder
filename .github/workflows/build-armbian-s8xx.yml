@@ -124,7 +124,7 @@ jobs:
     - name: Build Armbian base image
       run: |
         cd armbian-build
-        sudo ./compile.sh \
+        sudo COLUMNS=160 GITHUB_ACTIONS=true ./compile.sh \
           BOARD=aml-s812 \
           BRANCH=current \
           RELEASE=trixie \
