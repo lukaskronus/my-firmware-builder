@@ -57,10 +57,19 @@ jobs:
           cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-dump.config" .config
           make olddefconfig
       
-      - name: Patch clk-hix5hd2
+      - name: Copy DTS files
         working-directory: ./kernel-source
         run: |
-          grep -rl "remove_new" drivers/clk/hisilicon/ | xargs sed -i 's/\.remove_new\s*=/.remove =/'
+          mkdir -p arch/arm/boot/dts/hisilicon
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798.dtsi" arch/arm/boot/dts/hisilicon/
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798-s5.dtsi" arch/arm/boot/dts/hisilicon/
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100.dtsi" arch/arm/boot/dts/hisilicon/
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-ec6108v9c.dts" arch/arm/boot/dts/hisilicon/
+          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-ec6108v9c.dtb' >> arch/arm/boot/dts/hisilicon/Makefile
+
+          # Verify the Makefile entry was added correctly
+          echo "=== Last 3 lines of hisilicon Makefile ==="
+          tail -3 arch/arm/boot/dts/hisilicon/Makefile
 
       - name: Build Kernel, DTBs and Modules
         working-directory: ./kernel-source
