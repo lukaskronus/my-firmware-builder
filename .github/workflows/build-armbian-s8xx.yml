@@ -128,36 +128,35 @@ jobs:
         text = target.read_text()
         applied = 0
 
-
         old1 = "\tcp $SRC/packages/bsp/mpv/mpv_mainline.conf $SDCARD/etc/mpv/mpv.conf"
         new1 = "\t[ -d \"$SDCARD/etc/mpv\" ] && cp $SRC/packages/bsp/mpv/mpv_mainline.conf $SDCARD/etc/mpv/mpv.conf || true"
         if old1 in text:
-          text = text.replace(old1, new1)
-          print("Fix 1 applied: mpv copy guarded")
-          applied += 1
+            text = text.replace(old1, new1)
+            print("Fix 1 applied: mpv copy guarded")
+            applied += 1
         else:
-        print("WARNING Fix 1: mpv line not found (already patched?)")
+            print("WARNING Fix 1: mpv line not found (already patched?)")
 
         old2 = ">> $SDCARD/etc/X11/xorg.conf.d/01-armbian-defaults.conf"
         new2 = ">> $SDCARD/etc/X11/xorg.conf.d/01-armbian-defaults.conf || true"
         old2b = "\techo 'Section \"Device\"'"
         new2b = "\t[ -d \"$SDCARD/etc/X11\" ] && echo 'Section \"Device\"'"
         if old2 in text and old2b in text:
-          text = text.replace(old2b, new2b)
-          text = text.replace(old2, new2)
-          print("Fix 2 applied: xorg block guarded")
-          applied += 1
+            text = text.replace(old2b, new2b)
+            text = text.replace(old2, new2)
+            print("Fix 2 applied: xorg block guarded")
+            applied += 1
         else:
-        print("WARNING Fix 2: xorg lines not found (already patched?)")
+            print("WARNING Fix 2: xorg lines not found (already patched?)")
 
         old3 = "\tmkimage -A arm -O linux -C none -T kernel -a 0x00208000 -e 0x00208000 -n linux-next -d $SDCARD/boot/zImage $SDCARD/boot/uImage"
         new3 = "\t# uImage from zImage skipped: real uImage installed from xdarklight kernel build"
         if old3 in text:
-          text = text.replace(old3, new3)
-          print("Fix 3 applied: mkimage zImage removed")
-          applied += 1
+            text = text.replace(old3, new3)
+            print("Fix 3 applied: mkimage zImage removed")
+            applied += 1
         else:
-        print("WARNING Fix 3: mkimage zImage line not found (already patched?)")
+            print("WARNING Fix 3: mkimage zImage line not found (already patched?)")
 
         target.write_text(text)
         print(f"aml-s812.conf: {applied}/3 patches applied.")
