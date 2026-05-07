@@ -61,11 +61,8 @@ jobs:
         working-directory: ./kernel-source
         run: |
           mkdir -p arch/arm/boot/dts/hisilicon
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798.dtsi" arch/arm/boot/dts/hisilicon/
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798-s5.dtsi" arch/arm/boot/dts/hisilicon/
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100.dtsi" arch/arm/boot/dts/hisilicon/
-          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-ec6108v9c.dts" arch/arm/boot/dts/hisilicon/
-          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-ec6108v9c.dtb' >> arch/arm/boot/dts/hisilicon/Makefile
+          cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-a312.dts" arch/arm/boot/dts/hisilicon/
+          echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-a312.dtb' >> arch/arm/boot/dts/hisilicon/Makefile
 
           # Verify the Makefile entry was added correctly
           echo "=== Last 3 lines of hisilicon Makefile ==="
@@ -97,11 +94,11 @@ jobs:
         working-directory: ./kernel-source
         run: |
           cat arch/arm/boot/zImage \
-              arch/arm/boot/dts/hisilicon/hi3798mv100-ec6108v9c.dtb \
+              arch/arm/boot/dts/hisilicon/hi3798mv100-a312.dtb \
               > zImage-dtb
           mkimage -A arm -O linux -T kernel -C none \
-            -a 0x1FFFFC0 -e 0x1FFFFC0 \
-            -n "Kernel ${{ env.KERNEL_VERSION }} (${{ env.KERNEL_COMMIT }})" \
+            -a 0x02000000 -e 0x02000000 \
+            -n "Kernel ${{ env.KERNEL_VERSION }} for FPT A312" \
             -d zImage-dtb uImage
 
       - name: Upload Artifacts
