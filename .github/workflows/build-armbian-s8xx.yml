@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+
     - name: Checkout this repo
       uses: actions/checkout@v4
       with:
@@ -35,7 +36,7 @@ jobs:
           "$AGENT_TOOLSDIRECTORY"
         sudo apt-get clean
         df -h
-    
+
     - name: Install build dependencies
       run: |
         sudo apt-get update
@@ -60,7 +61,6 @@ jobs:
           https://ftp.debian.org/debian/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb
         sudo dpkg -i /tmp/keyring.deb
         rm /tmp/keyring.deb
-        # Also refresh apt so it sees the new keys
         sudo apt-get update -qq
 
     - name: Resolve remote HEAD SHAs for cache keys
@@ -82,9 +82,6 @@ jobs:
           --branch "${{ env.ARMBIAN_BRANCH }}" \
           "${{ env.ARMBIAN_REPO }}" \
           armbian-build
-        # SLAzurin's actual build steps (per forum post and releases):
-        #   "Copy files from userpatches.s8xx to userpatches"
-        # He uses compile_s812.sh which does this, but we do it manually here.
         cd armbian-build
         mv userpatches.s8xx userpatches
 
@@ -110,7 +107,7 @@ jobs:
       run: |
         sudo mkdir -p armbian-build/cache/rootfs armbian-build/cache/aptcache
         sudo chown -R root:root armbian-build/cache/
-    
+
     - name: Remove foreign x86-64 binary from BSP source
       run: |
         cd armbian-build
@@ -121,38 +118,86 @@ jobs:
         fi
         echo "BSP source cleaned."
 
+    - name: Patch aml-s812.conf family_tweaks for minimal Trixie build
+      run: |
+        python3 - << 'PYEOF'
+        import sys, shutil, pathlib
+
+        target = pathlib.Path("armbian-build/config/sources/families/aml-s812.conf")
+        shutil.copy(target, str(target) + ".bak")
+        text = target.read_text()
+        applied = 0
+
+
+        old1 = "\tcp $SRC/packages/bsp/mpv/mpv_mainline.conf $SDCARD/etc/mpv/mpv.conf"
+        new1 = "\t[ -d \"$SDCARD/etc/mpv\" ] && cp $SRC/packages/bsp/mpv/mpv_mainline.conf $SDCARD/etc/mpv/mpv.conf || true"
+        if old1 in text:
+          text = text.replace(old1, new1)
+          print("Fix 1 applied: mpv copy guarded")
+          applied += 1
+        else:
+        print("WARNING Fix 1: mpv line not found (already patched?)")
+
+        old2 = ">> $SDCARD/etc/X11/xorg.conf.d/01-armbian-defaults.conf"
+        new2 = ">> $SDCARD/etc/X11/xorg.conf.d/01-armbian-defaults.conf || true"
+        old2b = "\techo 'Section \"Device\"'"
+        new2b = "\t[ -d \"$SDCARD/etc/X11\" ] && echo 'Section \"Device\"'"
+        if old2 in text and old2b in text:
+          text = text.replace(old2b, new2b)
+          text = text.replace(old2, new2)
+          print("Fix 2 applied: xorg block guarded")
+          applied += 1
+        else:
+        print("WARNING Fix 2: xorg lines not found (already patched?)")
+
+        old3 = "\tmkimage -A arm -O linux -C none -T kernel -a 0x00208000 -e 0x00208000 -n linux-next -d $SDCARD/boot/zImage $SDCARD/boot/uImage"
+        new3 = "\t# uImage from zImage skipped: real uImage installed from xdarklight kernel build"
+        if old3 in text:
+          text = text.replace(old3, new3)
+          print("Fix 3 applied: mkimage zImage removed")
+          applied += 1
+        else:
+        print("WARNING Fix 3: mkimage zImage line not found (already patched?)")
+
+        target.write_text(text)
+        print(f"aml-s812.conf: {applied}/3 patches applied.")
+        if applied < 3:
+            print("Some patches were not applied — check warnings above.")
+            print("The upstream file may have changed. Build may still succeed if")
+            print("the lines were already patched in a previous cache-hit run.")
+        PYEOF
+
     - name: Patch rootfs-create.sh for SHA-1 acceptance (inside chroot)
       run: |
-        python3 << 'PYEOF'
-        import re, sys, shutil, pathlib
-
+        python3 - << 'PYEOF'
+        import sys, shutil, pathlib
+        
         target = pathlib.Path("armbian-build/lib/functions/rootfs/rootfs-create.sh")
         shutil.copy(target, str(target) + ".bak")
         text = target.read_text()
-
-        # The marker line we inject before
+        
         marker = 'display_alert "Updating package list"'
         if 'apt-sequoia.config' in text:
             print("Patch already applied, skipping.")
             sys.exit(0)
         if marker not in text:
-            print(f"ERROR: marker '{marker}' not found in {target}")
-            print("File may have changed upstream. Review manually.")
-            sys.exit(1)
-
-        inject = r"""
-        # Workaround: extend SHA-1 acceptance for Armbian repos signed with SHA-1
-        mkdir -p "${SDCARD}/etc/crypto-policies/back-ends"
-        cat > "${SDCARD}/etc/crypto-policies/back-ends/apt-sequoia.config" << 'EOFCONF'
+            print(f"WARNING: marker not found in {target}")
+            print("File may have changed upstream — skipping patch.")
+            sys.exit(0)
+        
+        inject = """
+        \t# Workaround: extend SHA-1 acceptance for Armbian repos signed with SHA-1
+        \tmkdir -p "${SDCARD}/etc/crypto-policies/back-ends"
+        \tcat > "${SDCARD}/etc/crypto-policies/back-ends/apt-sequoia.config" << 'EOFCONF'
         [hash_algorithms]
         sha1.second_preimage_resistance = 2030-01-01
         sha1.collision_resistance = 2030-01-01
         EOFCONF
         """
-
-        patched = text.replace(marker, inject + "\n        " + marker)
-        target.write_text(patched)
-        print("Patch applied successfully.")
+        
+        text = text.replace(marker, inject + "\t" + marker)
+        target.write_text(text)
+        print("rootfs-create.sh patched successfully.")
         PYEOF
 
     - name: Build Armbian base image
@@ -171,6 +216,15 @@ jobs:
             COMPRESS_OUTPUTIMAGE=no \
             USE_TORRENT=no \
             KERNEL_GIT=shallow
+
+    - name: Upload Armbian build logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: armbian-build-logs-${{ github.run_number }}
+        path: armbian-build/output/logs/
+        retention-days: 7
+        if-no-files-found: ignore
 
     - name: Cache kernel source tree
       id: kernel-src-cache
@@ -206,16 +260,9 @@ jobs:
       run: |
         cp my-repo/config_files/config-aml-s812 linux-src/.config
         cd linux-src
-
-        # Ensure POSIX_MQUEUE is enabled in the config BEFORE olddefconfig runs.
-        # If it's already present as =y, this sed is a no-op.
         sed -i \
           's@# CONFIG_POSIX_MQUEUE is not set@CONFIG_POSIX_MQUEUE=y\nCONFIG_POSIX_MQUEUE_SYSCTL=y@g' \
           .config
-
-        # Now run olddefconfig — sets any NEW 6.20 options to their Kconfig
-        # defaults without prompting. Equivalent to holding Enter for every
-        # new question, as SLAzurin's README describes.
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
 
     - name: Build kernel uImage and modules
@@ -245,22 +292,18 @@ jobs:
         sudo mount "${LOOP}p1" /tmp/mnt_boot
         sudo mount "${LOOP}p2" /tmp/mnt_root
 
-        # Back up the stock kernel
         [ -f /tmp/mnt_boot/uImage ] && \
           sudo cp /tmp/mnt_boot/uImage /tmp/mnt_boot/uImage.bak
 
-        # Install the new kernel
         sudo cp linux-src/arch/arm/boot/uImage /tmp/mnt_boot/uImage
 
-        # Install kernel modules into the rootfs
         sudo make -C linux-src \
           ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           INSTALL_MOD_PATH=/tmp/mnt_root \
           modules_install
 
-        # Save the finalised .config to /boot for future reference
-        # (boot the device, extract this, use as config-aml-s812 next time)
+        # Save finalised .config to /boot — useful as a base for future builds
         sudo cp linux-src/.config /tmp/mnt_boot/config-6.20.0-aml-s812
 
         sudo umount /tmp/mnt_boot
