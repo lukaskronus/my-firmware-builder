@@ -122,6 +122,12 @@ jobs:
           armbian-build
         cd armbian-build/
         mv userpatches.s8xx userpatches
+    
+    - name: Update Debian archive keyring for Trixie
+      run: |
+        wget -qO- https://ftp.debian.org/debian/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb > /tmp/keyring.deb
+        sudo dpkg -i /tmp/keyring.deb
+        rm /tmp/keyring.deb
 
     - name: Build Armbian base image
       run: |
@@ -162,11 +168,6 @@ jobs:
     - name: Show ccache statistics
       run: ccache --show-stats
 
-    # ── 8. Install kernel into image (loop mount) ─────────────────────────────
-    # Mirrors what SLAzurin does manually on the running device:
-    #   cp arch/arm/boot/uImage /boot/uImage
-    #   make modules_install && make headers_install
-    # Done here by loop-mounting the .img produced in step 5.
     - name: Install kernel into image
       run: |
         IMAGE=$(ls armbian-build/output/images/*.img | head -1)
