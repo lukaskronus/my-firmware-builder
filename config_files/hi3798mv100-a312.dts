@@ -358,7 +358,6 @@
 				cap-mmc-highspeed;
 				compatible = "hisilicon,hi3798cv200-dw-mshc";
 				clocks = <0x04 0x12 0x04 0x11 0x04 0x14 0x04 0x13>;
-				mmc-ddr-1_8v;
 				resets = <0x04 0xa0 0x04>;
 				clock-names = "ciu", "biu", "ciu-sample", "ciu-drive";
 				fifo-depth = <0x100>;
@@ -369,8 +368,7 @@
 				reset-names = "reset";
 				non-removable;
 					bus-width = <0x08>;
-					max-frequency = <0xbebc200>;
-				mmc-hs200-1_8v;
+					max-frequency = <0x3200000>;
 			};
 
 			pcie@9860000 {
