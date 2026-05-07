@@ -5,12 +5,11 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/build.yml'
-      - 'kernel.config'
+      - 'config_files/config-aml-s812'
 
 env:
   ARMBIAN_REPO:   https://github.com/SLAzurin/build-armbian-custom.git
-  ARMBIAN_BRANCH: s8xx-2025-02-27
+  ARMBIAN_BRANCH: s8xx
   KERNEL_REPO:    https://github.com/xdarklight/linux.git
   KERNEL_BRANCH:  meson-mx-integration-6.20-20251223
 
