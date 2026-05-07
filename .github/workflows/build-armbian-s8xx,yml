@@ -1,0 +1,213 @@
+name: Build Armbian Trixie + Kernel 6.20 for M8S
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'kernel.config'
+
+env:
+  ARMBIAN_REPO:   https://github.com/SLAzurin/build-armbian-custom.git
+  ARMBIAN_BRANCH: s8xx-2025-02-27
+  KERNEL_REPO:    https://github.com/xdarklight/linux.git
+  KERNEL_BRANCH:  meson-mx-integration-6.20-20251223
+
+jobs:
+  build:
+    name: Build image
+    runs-on: ubuntu-22.04
+
+    steps:
+
+    - name: Checkout this repo
+      uses: actions/checkout@v4
+      with:
+        path: my-repo
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf \
+          /usr/share/dotnet \
+          /usr/local/lib/android \
+          /opt/ghc \
+          /usr/local/share/boost \
+          "$AGENT_TOOLSDIRECTORY"
+        sudo apt-get clean
+        df -h
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          git build-essential bc bison flex libssl-dev \
+          gcc-arm-linux-gnueabihf \
+          u-boot-tools \
+          qemu-user-static \
+          debootstrap \
+          debian-archive-keyring \
+          xz-utils \
+          parted \
+          rsync \
+          kmod \
+          cpio \
+          ccache
+
+    - name: Resolve remote HEAD SHAs for cache keys
+      id: shas
+      run: |
+        ARMBIAN_SHA=$(git ls-remote "${{ env.ARMBIAN_REPO }}" \
+          "refs/heads/${{ env.ARMBIAN_BRANCH }}" | cut -f1)
+        KERNEL_SHA=$(git ls-remote "${{ env.KERNEL_REPO }}" \
+          "refs/heads/${{ env.KERNEL_BRANCH }}" | cut -f1)
+
+        echo "armbian_sha=${ARMBIAN_SHA}" >> "$GITHUB_OUTPUT"
+        echo "kernel_sha=${KERNEL_SHA}"   >> "$GITHUB_OUTPUT"
+        echo "Armbian branch HEAD: ${ARMBIAN_SHA}"
+        echo "Kernel  branch HEAD: ${KERNEL_SHA}"
+
+    - name: Cache Armbian rootfs
+      uses: actions/cache@v4
+      with:
+        path: armbian-build/cache/rootfs
+        key: armbian-rootfs-${{ steps.shas.outputs.armbian_sha }}-trixie
+        restore-keys: |
+          armbian-rootfs-${{ steps.shas.outputs.armbian_sha }}-
+          armbian-rootfs-
+
+    - name: Cache Armbian apt packages
+      uses: actions/cache@v4
+      with:
+        path: armbian-build/cache/aptcache
+        key: armbian-aptcache-trixie-${{ steps.shas.outputs.armbian_sha }}
+        restore-keys: |
+          armbian-aptcache-trixie-
+          armbian-aptcache-
+
+    - name: Cache kernel source tree
+      id: kernel-src-cache
+      uses: actions/cache@v4
+      with:
+        path: linux-src
+        key: kernel-src-${{ steps.shas.outputs.kernel_sha }}
+
+    - name: Clone xdarklight kernel (skipped on cache hit)
+      if: steps.kernel-src-cache.outputs.cache-hit != 'true'
+      run: |
+        git clone --depth=1 \
+          --branch "${{ env.KERNEL_BRANCH }}" \
+          "${{ env.KERNEL_REPO }}" \
+          linux-src
+
+    - name: Cache kernel ccache objects
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: kernel-ccache-${{ steps.shas.outputs.kernel_sha }}
+        restore-keys: |
+          kernel-ccache-
+
+    - name: Configure ccache
+      run: |
+        ccache --max-size=5G
+        ccache --zero-stats
+        echo "CC=ccache arm-linux-gnueabihf-gcc"  >> "$GITHUB_ENV"
+        echo "CXX=ccache arm-linux-gnueabihf-g++" >> "$GITHUB_ENV"
+
+    - name: Clone SLAzurin Armbian build fork
+      run: |
+        git clone --depth=1 \
+          --branch "${{ env.ARMBIAN_BRANCH }}" \
+          "${{ env.ARMBIAN_REPO }}" \
+          armbian-build
+
+    - name: Build Armbian base image
+      run: |
+        cd armbian-build
+        sudo ./compile.sh \
+          BOARD=aml-s812 \
+          BRANCH=current \
+          RELEASE=trixie \
+          BUILD_MINIMAL=yes \
+          BUILD_DESKTOP=no \
+          KERNEL_CONFIGURE=no \
+          COMPRESS_OUTPUTIMAGE=sha,gpg,img \
+          USE_TORRENT=no \
+          KERNEL_GIT=shallow
+
+    - name: Seed kernel config
+      run: |
+        cp my-repo/config_files/config-aml-s812 linux-src/.config
+        cd linux-src
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
+        # Docker requirement (per SLAzurin's README)
+        sed -i \
+          's@# CONFIG_POSIX_MQUEUE is not set@CONFIG_POSIX_MQUEUE=y\nCONFIG_POSIX_MQUEUE_SYSCTL=y@g' \
+          .config
+
+    - name: Build kernel uImage and modules
+      run: |
+        cd linux-src
+        make -j$(nproc) \
+          ARCH=arm \
+          CROSS_COMPILE=arm-linux-gnueabihf- \
+          CC="$CC" \
+          CXX="$CXX" \
+          LOCALVERSION="-aml-s812" \
+          LOADADDR=0x00208000 \
+          uImage modules
+
+    - name: Show ccache statistics
+      run: ccache --show-stats
+
+    # ── 8. Install kernel into image (loop mount) ─────────────────────────────
+    # Mirrors what SLAzurin does manually on the running device:
+    #   cp arch/arm/boot/uImage /boot/uImage
+    #   make modules_install && make headers_install
+    # Done here by loop-mounting the .img produced in step 5.
+    - name: Install kernel into image
+      run: |
+        IMAGE=$(ls armbian-build/output/images/*.img | head -1)
+        echo "Target image: $IMAGE"
+        mkdir -p /tmp/mnt_boot /tmp/mnt_root
+
+        LOOP=$(sudo losetup --find --show --partscan "$IMAGE")
+        echo "Loop device: $LOOP"
+
+        sudo mount "${LOOP}p1" /tmp/mnt_boot
+        sudo mount "${LOOP}p2" /tmp/mnt_root
+
+        [ -f /tmp/mnt_boot/uImage ] && \
+          sudo cp /tmp/mnt_boot/uImage /tmp/mnt_boot/uImage.bak
+
+        sudo cp linux-src/arch/arm/boot/uImage /tmp/mnt_boot/uImage
+
+        # Install kernel modules into the rootfs
+        sudo make -C linux-src \
+          ARCH=arm \
+          CROSS_COMPILE=arm-linux-gnueabihf- \
+          INSTALL_MOD_PATH=/tmp/mnt_root \
+          modules_install
+
+        sudo cp linux-src/.config /tmp/mnt_boot/config-6.20.0-aml-s812
+
+        sudo umount /tmp/mnt_boot
+        sudo umount /tmp/mnt_root
+        sudo losetup -d "$LOOP"
+        echo "Kernel installed successfully."
+
+    - name: Compress image with xz
+      run: |
+        IMAGE=$(ls armbian-build/output/images/*.img | head -1)
+        # -T0 = use all cores, matches SLAzurin's compression practice
+        sudo xz -T0 -v "$IMAGE"
+        ls -lh armbian-build/output/images/
+
+    - name: Upload image as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: armbian-trixie-linux620-m8s-build${{ github.run_number }}
+        path: armbian-build/output/images/*.xz
+        retention-days: 30
+        if-no-files-found: error
