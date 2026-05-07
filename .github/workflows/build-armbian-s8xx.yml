@@ -120,11 +120,13 @@ jobs:
           --branch "${{ env.ARMBIAN_BRANCH }}" \
           "${{ env.ARMBIAN_REPO }}" \
           armbian-build
+        cd armbian-build/
+        mv userpatches.s8xx userpatches
 
     - name: Build Armbian base image
       run: |
         cd armbian-build
-        sudo COLUMNS=160 GITHUB_ACTIONS=true ./compile.sh \
+        sudo COLUMNS=160 GITHUB_ACTIONS=true GITHUB_OUTPUT="$GITHUB_OUTPUT" ./compile.sh \
           BOARD=aml-s812 \
           BRANCH=current \
           RELEASE=trixie \
