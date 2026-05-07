@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/build.yml'
       - 'config_files/config-aml-s812'
 
 env:
@@ -19,7 +20,6 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-
     - name: Checkout this repo
       uses: actions/checkout@v4
       with:
@@ -35,7 +35,7 @@ jobs:
           "$AGENT_TOOLSDIRECTORY"
         sudo apt-get clean
         df -h
-
+    
     - name: Install build dependencies
       run: |
         sudo apt-get update
@@ -51,7 +51,17 @@ jobs:
           rsync \
           kmod \
           cpio \
-          ccache
+          ccache \
+          python3
+
+    - name: Update Debian archive keyring (host)
+      run: |
+        wget -q -O /tmp/keyring.deb \
+          https://ftp.debian.org/debian/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb
+        sudo dpkg -i /tmp/keyring.deb
+        rm /tmp/keyring.deb
+        # Also refresh apt so it sees the new keys
+        sudo apt-get update -qq
 
     - name: Resolve remote HEAD SHAs for cache keys
       id: shas
@@ -65,6 +75,18 @@ jobs:
         echo "kernel_sha=${KERNEL_SHA}"   >> "$GITHUB_OUTPUT"
         echo "Armbian branch HEAD: ${ARMBIAN_SHA}"
         echo "Kernel  branch HEAD: ${KERNEL_SHA}"
+
+    - name: Clone SLAzurin Armbian build fork
+      run: |
+        git clone --depth=1 \
+          --branch "${{ env.ARMBIAN_BRANCH }}" \
+          "${{ env.ARMBIAN_REPO }}" \
+          armbian-build
+        # SLAzurin's actual build steps (per forum post and releases):
+        #   "Copy files from userpatches.s8xx to userpatches"
+        # He uses compile_s812.sh which does this, but we do it manually here.
+        cd armbian-build
+        mv userpatches.s8xx userpatches
 
     - name: Cache Armbian rootfs
       uses: actions/cache@v4
@@ -83,6 +105,72 @@ jobs:
         restore-keys: |
           armbian-aptcache-trixie-
           armbian-aptcache-
+
+    - name: Fix cache directory permissions
+      run: |
+        sudo mkdir -p armbian-build/cache/rootfs armbian-build/cache/aptcache
+        sudo chown -R root:root armbian-build/cache/
+    
+    - name: Remove foreign x86-64 binary from BSP source
+      run: |
+        cd armbian-build
+        find packages/bsp/ -name 'ld-linux-x86-64.so.2' -delete
+        if find packages/bsp/ -name 'ld-linux-x86-64.so.2' | grep -q .; then
+          echo "ERROR: x86-64 file still present in BSP source"
+          exit 1
+        fi
+        echo "BSP source cleaned."
+
+    - name: Patch rootfs-create.sh for SHA-1 acceptance (inside chroot)
+      run: |
+        python3 << 'PYEOF'
+        import re, sys, shutil, pathlib
+
+        target = pathlib.Path("armbian-build/lib/functions/rootfs/rootfs-create.sh")
+        shutil.copy(target, str(target) + ".bak")
+        text = target.read_text()
+
+        # The marker line we inject before
+        marker = 'display_alert "Updating package list"'
+        if 'apt-sequoia.config' in text:
+            print("Patch already applied, skipping.")
+            sys.exit(0)
+        if marker not in text:
+            print(f"ERROR: marker '{marker}' not found in {target}")
+            print("File may have changed upstream. Review manually.")
+            sys.exit(1)
+
+        inject = r"""
+        # Workaround: extend SHA-1 acceptance for Armbian repos signed with SHA-1
+        mkdir -p "${SDCARD}/etc/crypto-policies/back-ends"
+        cat > "${SDCARD}/etc/crypto-policies/back-ends/apt-sequoia.config" << 'EOFCONF'
+        [hash_algorithms]
+        sha1.second_preimage_resistance = 2030-01-01
+        sha1.collision_resistance = 2030-01-01
+        EOFCONF
+        """
+
+        patched = text.replace(marker, inject + "\n        " + marker)
+        target.write_text(patched)
+        print("Patch applied successfully.")
+        PYEOF
+
+    - name: Build Armbian base image
+      run: |
+        cd armbian-build
+        sudo COLUMNS=160 \
+          GITHUB_ACTIONS=true \
+          GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+          ./compile.sh \
+            BOARD=aml-s812 \
+            BRANCH=current \
+            RELEASE=trixie \
+            BUILD_MINIMAL=yes \
+            BUILD_DESKTOP=no \
+            KERNEL_CONFIGURE=no \
+            COMPRESS_OUTPUTIMAGE=no \
+            USE_TORRENT=no \
+            KERNEL_GIT=shallow
 
     - name: Cache kernel source tree
       id: kernel-src-cache
@@ -114,74 +202,21 @@ jobs:
         echo "CC=ccache arm-linux-gnueabihf-gcc"  >> "$GITHUB_ENV"
         echo "CXX=ccache arm-linux-gnueabihf-g++" >> "$GITHUB_ENV"
 
-    - name: Clone SLAzurin Armbian build fork
-      run: |
-        git clone --depth=1 \
-          --branch "${{ env.ARMBIAN_BRANCH }}" \
-          "${{ env.ARMBIAN_REPO }}" \
-          armbian-build
-        cd armbian-build/
-        mv userpatches.s8xx userpatches
-    
-    - name: Update Debian archive keyring for Trixie
-      run: |
-        wget -qO- https://ftp.debian.org/debian/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb > /tmp/keyring.deb
-        sudo dpkg -i /tmp/keyring.deb
-        rm /tmp/keyring.deb
-
-    - name: Patch rootfs-create.sh to extend SHA-1 acceptance
-      run: |
-        cd armbian-build
-        cp lib/functions/rootfs/rootfs-create.sh lib/functions/rootfs/rootfs-create.sh.bak
-        sed -i '/^[[:space:]]*display_alert "Updating package list"/i \
-        # Workaround: extend SHA-1 acceptance for Armbian repos signed with SHA-1\n \
-        mkdir -p "${SDCARD}/etc/crypto-policies/back-ends"\n \
-        cat <<EOF > "${SDCARD}/etc/crypto-policies/back-ends/apt-sequoia.config"\n \
-        [hash_algorithms]\n \
-        sha1.second_preimage_resistance = 2030-01-01\n \
-        sha1.collision_resistance = 2030-01-01\n \
-        EOF' lib/functions/rootfs/rootfs-create.sh
-        grep -B2 -A5 'apt-sequoia.config' lib/functions/rootfs/rootfs-create.sh || {
-          echo "ERROR: Patch failed! Restoring backup."
-          cp lib/functions/rootfs/rootfs-create.sh.bak lib/functions/rootfs/rootfs-create.sh
-          exit 1
-        }
-    
-    - name: Remove foreign host binary from BSP source
-      run: |
-        cd armbian-build
-        # Remove the x86-64 dynamic linker that erroneously ended up in the BSP
-        find packages/bsp/ -name 'ld-linux-x86-64.so.2' -delete
-        # Double-check that it's gone
-        if find packages/bsp/ -name 'ld-linux-x86-64.so.2' | grep -q .; then
-          echo "ERROR: x86-64 file still present in BSP source"
-          exit 1
-        fi
-        echo "BSP source cleaned"
-    
-    - name: Build Armbian base image
-      run: |
-        cd armbian-build
-        sudo COLUMNS=160 GITHUB_ACTIONS=true GITHUB_OUTPUT="$GITHUB_OUTPUT" ./compile.sh \
-          BOARD=aml-s812 \
-          BRANCH=current \
-          RELEASE=trixie \
-          BUILD_MINIMAL=yes \
-          BUILD_DESKTOP=no \
-          KERNEL_CONFIGURE=no \
-          COMPRESS_OUTPUTIMAGE=sha,gpg,img \
-          USE_TORRENT=no \
-          KERNEL_GIT=shallow
-
     - name: Seed kernel config
       run: |
         cp my-repo/config_files/config-aml-s812 linux-src/.config
         cd linux-src
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
-        # Docker requirement (per SLAzurin's README)
+
+        # Ensure POSIX_MQUEUE is enabled in the config BEFORE olddefconfig runs.
+        # If it's already present as =y, this sed is a no-op.
         sed -i \
           's@# CONFIG_POSIX_MQUEUE is not set@CONFIG_POSIX_MQUEUE=y\nCONFIG_POSIX_MQUEUE_SYSCTL=y@g' \
           .config
+
+        # Now run olddefconfig — sets any NEW 6.20 options to their Kconfig
+        # defaults without prompting. Equivalent to holding Enter for every
+        # new question, as SLAzurin's README describes.
+        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
 
     - name: Build kernel uImage and modules
       run: |
@@ -210,9 +245,11 @@ jobs:
         sudo mount "${LOOP}p1" /tmp/mnt_boot
         sudo mount "${LOOP}p2" /tmp/mnt_root
 
+        # Back up the stock kernel
         [ -f /tmp/mnt_boot/uImage ] && \
           sudo cp /tmp/mnt_boot/uImage /tmp/mnt_boot/uImage.bak
 
+        # Install the new kernel
         sudo cp linux-src/arch/arm/boot/uImage /tmp/mnt_boot/uImage
 
         # Install kernel modules into the rootfs
@@ -222,6 +259,8 @@ jobs:
           INSTALL_MOD_PATH=/tmp/mnt_root \
           modules_install
 
+        # Save the finalised .config to /boot for future reference
+        # (boot the device, extract this, use as config-aml-s812 next time)
         sudo cp linux-src/.config /tmp/mnt_boot/config-6.20.0-aml-s812
 
         sudo umount /tmp/mnt_boot
@@ -232,7 +271,6 @@ jobs:
     - name: Compress image with xz
       run: |
         IMAGE=$(ls armbian-build/output/images/*.img | head -1)
-        # -T0 = use all cores, matches SLAzurin's compression practice
         sudo xz -T0 -v "$IMAGE"
         ls -lh armbian-build/output/images/
 
