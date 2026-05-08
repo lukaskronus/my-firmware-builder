@@ -1,4 +1,4 @@
-name: Build Pure TTL Package with Pre-built Kernel (6.19.0-rc3+)
+name: Build Rootfs with Pre-built Kernel for Hi3798MV100
 
 on:
   workflow_dispatch:

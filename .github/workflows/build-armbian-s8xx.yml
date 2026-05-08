@@ -1,4 +1,4 @@
-name: Build Armbian Trixie + Kernel 6.20 for M8S
+name: Build Armbian Trixie with Kernl S812
 
 on:
   workflow_dispatch:

@@ -1,0 +1,248 @@
+name: RK3066 Image Builder
+
+on:
+  workflow_dispatch: 
+
+env:
+  ARCH: arm
+  CROSS_COMPILE: arm-linux-gnueabihf-
+  JOBS: $(nproc)
+  DEBIAN_RELEASE: trixie
+  DEBIAN_ARCH: armhf
+  IMAGE_NAME: rk3066-debian-trixie.img
+  IMAGE_SIZE_MB: 2048        # total image size  (increase if rootfs is bigger)
+  BOOT_PART_MB: 64           # size of the FAT32 /boot partition
+  # U-Boot is written raw before the first partition, sector 64 (0x40)
+  UBOOT_SECTOR: 64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout workflow repo
+      uses: actions/checkout@v4
+      with:
+        path: workflow-repo
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          gcc-arm-linux-gnueabihf \
+          binutils-arm-linux-gnueabihf \
+          make bison flex bc libssl-dev \
+          libncurses-dev device-tree-compiler \
+          debootstrap qemu-user-static \
+          binfmt-support dosfstools \
+          parted kpartx gdisk e2fsprogs \
+          python3 python3-pyelftools \
+          swig libfdt-dev \
+          u-boot-tools \
+          xz-utils zip curl ca-certificates
+
+    - name: Clone U-Boot repo
+      run: |
+        git clone --depth=1 https://github.com/archeYR/u-boot.git uboot
+        echo "U-Boot cloned ✓"
+
+    - name: Clone kernel repo
+      run: |
+        git clone --depth=1 --brach=bq-curie https://github.com/archeYR/linux/.git kernel
+        echo "Kernel cloned ✓"
+
+    - name: Build U-Boot
+      working-directory: uboot
+      run: |
+        make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+             mk808_defconfig
+        make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+             -j$(nproc) all
+        echo "U-Boot build complete ✓"
+        ls -lh u-boot.bin u-boot-dtb.bin 2>/dev/null || ls -lh u-boot* | head -20
+
+    - name: Build kernel
+      working-directory: kernel
+      run: |
+        make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+             multi_v7_defconfig
+
+        # Optionally enable any extra options here with scripts/config
+        # make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} menuconfig
+
+        make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+             -j$(nproc) zImage dtbs modules
+        echo "Kernel build complete ✓"
+
+    - name: Bootstrap Debian Trixie (stage 1 — no chroot)
+      run: |
+        sudo debootstrap \
+          --arch=${{ env.DEBIAN_ARCH }} \
+          --foreign \
+          --include=systemd,systemd-sysv,dbus,udev,kmod,\
+        iproute2,iputils-ping,net-tools,\
+        openssh-server,sudo,\
+        bash-completion,vim-tiny,htop,\
+        apt-utils,locales,tzdata,\
+        wireless-tools,wpasupplicant,\
+        ca-certificates,curl,wget,\
+        dosfstools,e2fsprogs,gdisk,parted \
+          ${{ env.DEBIAN_RELEASE }} \
+          rootfs \
+          http://deb.debian.org/debian
+        echo "Debootstrap stage 1 complete ✓"
+
+    - name: Bootstrap Debian Trixie (stage 2 — inside QEMU)
+      run: |
+        # Copy static QEMU binary so the ARM rootfs can run inside x86 CI
+        sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
+        sudo update-binfmts --enable qemu-arm
+        # Complete the bootstrap
+        sudo chroot rootfs /debootstrap/debootstrap --second-stage
+        echo "Debootstrap stage 2 complete ✓"
+
+    - name: Configure rootfs
+      run: |
+        # -- hostname --
+        echo "rk3066" | sudo tee rootfs/etc/hostname
+
+        # -- fstab --
+        sudo tee rootfs/etc/fstab <<'EOF'
+        /dev/mmcblk0p2  /        ext4  defaults,noatime  0 1
+        /dev/mmcblk0p1  /boot    vfat  defaults          0 2
+        EOF
+
+        # -- networking (systemd-networkd) --
+        sudo mkdir -p rootfs/etc/systemd/network
+        sudo tee rootfs/etc/systemd/network/20-wired.network <<'EOF'
+        [Match]
+        Name=eth*
+        [Network]
+        DHCP=yes
+        EOF
+
+        sudo chroot rootfs systemctl enable systemd-networkd || true
+        sudo chroot rootfs systemctl enable systemd-resolved  || true
+
+        # -- set root password --
+        echo "root:1234" | sudo chroot rootfs chpasswd
+        # Allow root SSH login (handy for first boot; tighten later)
+        sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' \
+             rootfs/etc/ssh/sshd_config || true
+        sudo chroot rootfs systemctl enable ssh || true
+
+        echo "rootfs configuration complete ✓"
+
+    - name: Install kernel modules into rootfs
+      working-directory: kernel
+      run: |
+        sudo make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+             INSTALL_MOD_PATH=../rootfs \
+             modules_install
+        echo "Kernel modules installed ✓"
+
+    - name: Copy kernel and DTBs to rootfs /boot
+      run: |
+        sudo mkdir -p rootfs/boot
+
+        # Kernel image
+        sudo cp kernel/arch/arm/boot/zImage rootfs/boot/zImage
+
+        # Device tree blobs — copy all RK3066 DTBs found
+        find kernel/arch/arm/boot/dts -name "rk3066*.dtb" \
+          -exec sudo cp {} rootfs/boot/ \;
+
+        # Create a simple boot script for U-Boot
+        sudo mkdir -p rootfs/boot/extlinux
+        sudo tee rootfs/boot/extlinux/extlinux.conf <<'EOF'
+        label Debian Trixie RK3066
+            kernel /boot/zImage
+            fdt    /boot/rk3066a-mk808.dtb
+            append root=/dev/mmcblk0p2 rootwait console=ttyS2,115200n8 earlyprintk
+        EOF
+
+        echo "Kernel and DTBs copied to rootfs/boot ✓"
+        ls -lh rootfs/boot/
+
+    - name: Create disk image
+      run: |
+        # Allocate the image file
+        dd if=/dev/zero of=${{ env.IMAGE_NAME }} \
+           bs=1M count=${{ env.IMAGE_SIZE_MB }} status=progress
+
+        # Partition table:
+        #   p1 — FAT32 /boot  (64 MiB)
+        #   p2 — ext4  /      (rest)
+        # Partitions start at sector 2048 (1 MiB offset) to leave room for U-Boot
+        sudo parted -s ${{ env.IMAGE_NAME }} \
+          mklabel msdos \
+          mkpart primary fat32 1MiB $(( ${{ env.BOOT_PART_MB }} + 1 ))MiB \
+          mkpart primary ext4  $(( ${{ env.BOOT_PART_MB }} + 1 ))MiB 100% \
+          set 1 boot on
+
+        echo "Partition table created ✓"
+        sudo parted -s ${{ env.IMAGE_NAME }} print
+
+    - name: Write U-Boot to image
+      run: |
+        # RK3066 typically expects U-Boot at sector 64 (0x8000 offset)
+        # Adjust the skip/seek values and the binary name for your board
+        UBOOT_BIN=$(ls uboot/u-boot-dtb.bin uboot/u-boot.bin 2>/dev/null | head -1)
+        echo "Writing $UBOOT_BIN at sector ${{ env.UBOOT_SECTOR }}"
+        sudo dd if="$UBOOT_BIN" of=${{ env.IMAGE_NAME }} \
+             bs=512 seek=${{ env.UBOOT_SECTOR }} conv=notrunc status=progress
+        echo "U-Boot written ✓"
+
+    - name: Format partitions and populate image
+      run: |
+        # Map the image partitions to loop devices
+        LOOP=$(sudo losetup --find --show --partscan ${{ env.IMAGE_NAME }})
+        echo "Loop device: $LOOP"
+
+        # Format
+        sudo mkfs.vfat -n BOOT "${LOOP}p1"
+        sudo mkfs.ext4 -L rootfs "${LOOP}p2"
+
+        # Mount and copy
+        mkdir -p mnt_boot mnt_root
+        sudo mount "${LOOP}p1" mnt_boot
+        sudo mount "${LOOP}p2" mnt_root
+
+        # Copy /boot from rootfs to the FAT partition
+        sudo cp -r rootfs/boot/* mnt_boot/
+
+        # Copy everything else to ext4 partition
+        # rsync keeps permissions/symlinks better than cp -a across loop devices
+        sudo rsync -aAX \
+          --exclude=/boot \
+          --exclude=/proc \
+          --exclude=/sys \
+          --exclude=/dev \
+          --exclude=/run \
+          rootfs/ mnt_root/
+
+        # Re-create essential empty dirs
+        for d in proc sys dev run boot; do
+          sudo mkdir -p mnt_root/$d
+        done
+
+        # Sync and unmount
+        sync
+        sudo umount mnt_boot mnt_root
+        sudo losetup -d "$LOOP"
+
+        echo "Image populated ✓"
+
+    - name: Compress image
+      run: |
+        xz -T0 -v ${{ env.IMAGE_NAME }}
+        ls -lh ${{ env.IMAGE_NAME }}.xz
+
+    - name: Upload image artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: rk3066-debian-trixie-image
+        path: ${{ env.IMAGE_NAME }}.xz
+        retention-days: 7
