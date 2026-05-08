@@ -1,4 +1,4 @@
-name: Build Armbian Trixie with Kernl S812
+name: Build Armbian Trixie with Kernel S812
 
 on:
   workflow_dispatch:
