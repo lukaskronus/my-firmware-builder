@@ -305,6 +305,34 @@ jobs:
         # Save finalised .config to /boot — useful as a base for future builds
         sudo cp linux-src/.config /tmp/mnt_boot/config-6.20.0-aml-s812
 
+        # Fix root partition label in uEnv.txt
+        if sudo test -f /tmp/mnt_boot/uEnv.txt; then
+          sudo sed -i 's|root=LABEL=ROOTFS|root=LABEL=armbi_root|g' /tmp/mnt_boot/uEnv.txt
+          echo "uEnv.txt root label fixed."
+          sudo grep "root=" /tmp/mnt_boot/uEnv.txt || true
+        else
+          echo "WARNING: uEnv.txt not found in boot partition"
+        fi
+
+        if sudo test -f /tmp/mnt_boot/boot.ini; then
+          sudo sed -i 's|root=LABEL=ROOTFS|root=LABEL=armbi_root|g' /tmp/mnt_boot/boot.ini
+          echo "boot.ini root label fixed."
+        fi
+
+        # Also fix armbianEnv.txt if present (newer Armbian layout)
+        if sudo test -f /tmp/mnt_boot/armbianEnv.txt; then
+          sudo sed -i 's|rootdev=LABEL=ROOTFS|rootdev=LABEL=armbi_root|g' /tmp/mnt_boot/armbianEnv.txt
+          echo "armbianEnv.txt rootdev fixed."
+        fi
+
+        # Verify the actual label on the root partition matches what we set
+        ROOT_LABEL=$(sudo e2label "${LOOP}p2" 2>/dev/null || echo "unknown")
+        echo "Root partition (${LOOP}p2) label: ${ROOT_LABEL}"
+        if [ "$ROOT_LABEL" != "armbi_root" ] && [ "$ROOT_LABEL" != "ROOTFS" ]; then
+          echo "WARNING: unexpected root label '${ROOT_LABEL}' — setting it to armbi_root"
+          sudo e2label "${LOOP}p2" armbi_root
+        fi
+
         sudo umount /tmp/mnt_boot
         sudo umount /tmp/mnt_root
         sudo losetup -d "$LOOP"
