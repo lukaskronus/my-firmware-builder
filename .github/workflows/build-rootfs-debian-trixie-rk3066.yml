@@ -50,7 +50,7 @@ jobs:
 
     - name: Clone kernel repo
       run: |
-        git clone --depth=1 --brach=bq-curie https://github.com/archeYR/linux/.git kernel
+        git clone --depth=1 --brach=bq-curie https://github.com/archeYR/linux.git kernel
         echo "Kernel cloned ✓"
 
     - name: Build U-Boot
