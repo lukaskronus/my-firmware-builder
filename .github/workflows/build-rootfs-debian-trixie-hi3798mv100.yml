@@ -10,7 +10,7 @@ jobs:
 
     steps:
     - name: 1. Checkout Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: 2. Install Dependencies
       run: |
