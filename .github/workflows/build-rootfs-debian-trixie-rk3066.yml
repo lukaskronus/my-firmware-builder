@@ -53,7 +53,7 @@ jobs:
 
     # -------------------------------------------------------------------------
     - name: Checkout workflow repo
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         path: workflow-repo
 
@@ -348,6 +348,88 @@ jobs:
         echo "Boot files ready ✓"
         cat boot_files/extlinux/extlinux.conf
 
+    # =========================================================================
+    # SELF-BOOTABLE SD CARD IMAGE
+    # U-Boot at sector 64 + kernel + rootfs = fully standalone boot
+    # Use this if you can't flash NAND via USB OTG
+    # =========================================================================
+
+    - name: Create self-bootable SD card image
+      run: |
+        SD_IMAGE="rk3066-sdcard.img"
+        SD_SIZE_MB=2048
+        BOOT_START_MB=16          # Leave room for U-Boot at sectors 64+
+
+        # Create image
+        dd if=/dev/zero of=${SD_IMAGE} bs=1M count=${SD_SIZE_MB} status=progress
+
+        # Partition: start at 16MiB so U-Boot fits before partition 1
+        sudo parted -s ${SD_IMAGE} \
+          mklabel msdos \
+          mkpart primary fat32 ${BOOT_START_MB}MiB $((128 + 16))MiB \
+          mkpart primary ext4  $((128 + 16))MiB 100% \
+          set 1 boot on
+
+        # ── Write U-Boot at sector 64 (where BootROM looks for it) ──
+        # u-boot-rockchip.bin already has the RK30 header + SPL at the
+        # correct offset. This is what the BootROM needs to find.
+        sudo dd if=uboot/u-boot-rockchip.bin \
+          of=${SD_IMAGE} \
+          bs=512 seek=64 conv=notrunc
+
+        echo "U-Boot written to sector 64 ✓"
+        sudo parted -s ${SD_IMAGE} print
+
+        # ── Populate partitions ──
+        LOOP=$(sudo losetup --find --show --partscan ${SD_IMAGE})
+        sudo mkfs.vfat -n BOOT   "${LOOP}p1"
+        sudo mkfs.ext4 -L rootfs "${LOOP}p2"
+
+        mkdir -p mnt_boot mnt_root
+        sudo mount "${LOOP}p1" mnt_boot
+        sudo mount "${LOOP}p2" mnt_root
+
+        # /boot partition
+        sudo mkdir -p mnt_boot/extlinux
+        sudo cp boot_files/zImage                  mnt_boot/
+        sudo cp boot_files/*.dtb                   mnt_boot/ 2>/dev/null || true
+        sudo cp boot_files/extlinux/extlinux.conf  mnt_boot/extlinux/
+
+        # extlinux.conf needs to point to MMC, not USB
+        sudo tee mnt_boot/extlinux/extlinux.conf >/dev/null <<'EOF'
+        label Debian Trixie RK3066 (SD Card)
+            kernel /boot/zImage
+            fdt    /boot/rk3066a-mk808.dtb
+            append root=/dev/mmcblk0p2 rootwait rootfstype=ext4 \
+                   console=ttyS2,115200n8 earlyprintk \
+                   init=/sbin/init
+        EOF
+
+        # /rootfs partition
+        sudo rsync -aAX \
+          --exclude=/boot \
+          --exclude=/proc \
+          --exclude=/sys \
+          --exclude=/dev \
+          --exclude=/run \
+          rootfs/ mnt_root/
+
+        for d in boot proc sys dev run; do
+          sudo mkdir -p mnt_root/$d
+        done
+
+        sync
+        sudo umount mnt_boot mnt_root
+        sudo losetup -d "$LOOP"
+
+        # Compress
+        xz -T0 -v ${SD_IMAGE}
+        ls -lh ${SD_IMAGE}.xz
+
+        # Move to upload location
+        mv ${SD_IMAGE}.xz rk3066-sdcard.img.xz
+        echo "Self-bootable SD card image ready ✓"
+
     - name: Create USB image
       run: |
         dd if=/dev/zero of=${{ env.USB_IMAGE_NAME }} \
@@ -415,6 +497,13 @@ jobs:
         # Flash this to NAND using RKAndroidTool on Windows — do this once
         path: rk3066-uboot-nand.bin
         retention-days: 30
+
+    - name: Upload SD card image
+      uses: actions/upload-artifact@v4
+      with:
+        name: rk3066-sdcard-image
+        path: rk3066-sdcard.img.xz
+        retention-days: 7
 
     - name: Upload USB image
       uses: actions/upload-artifact@v4
