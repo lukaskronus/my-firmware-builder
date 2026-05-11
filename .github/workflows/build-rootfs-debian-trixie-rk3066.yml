@@ -117,8 +117,12 @@ jobs:
              -j$(nproc) all
 
         echo "U-Boot build complete ✓"
-        ls -lh u-boot-tpl.bin u-boot-spl.bin u-boot.bin 2>/dev/null \
-          || ls -lh u-boot* | head -20
+        echo "=== Root directory ==="
+        ls -lh u-boot* 2>/dev/null || true
+        echo "=== SPL directory ==="
+        ls -lh spl/u-boot-spl* 2>/dev/null || echo "(no spl/ directory or no SPL files)"
+        echo "=== TPL directory ==="
+        ls -lh tpl/u-boot-tpl* 2>/dev/null || echo "(no tpl/ directory or no TPL files)"
 
     # -------------------------------------------------------------------------
     # Package U-Boot into Rockchip NAND loader format
@@ -127,13 +131,44 @@ jobs:
     - name: Package U-Boot for NAND (RKAndroidTool format)
       working-directory: uboot
       run: |
-        # Combine TPL + SPL into one loader binary with RK30 header
+        # ── Strategy: prefer the build system's own Rockchip image ──
+        # u-boot-rockchip.bin is produced by "make all" for Rockchip SoCs.
+        # It already contains the proper Rockchip header + SPL + U-Boot
+        # at the correct sector offsets.  This is the file RKAndroidTool
+        # needs for NAND flashing on RK3066.
+
+        if [ -f u-boot-rockchip.bin ]; then
+          echo "Using u-boot-rockchip.bin as NAND loader"
+          cp u-boot-rockchip.bin ../rk3066-uboot-nand.bin
+          echo "NAND loader ready ✓"
+          ls -lh ../rk3066-uboot-nand.bin
+          exit 0
+        fi
+
+        # ── Fallback: locate SPL/TPL in subdirectories ──
+        # Standard U-Boot builds place them in spl/ and tpl/
+        [ -f spl/u-boot-spl.bin ] && cp spl/u-boot-spl.bin u-boot-spl.bin
+        [ -f tpl/u-boot-tpl.bin ] && cp tpl/u-boot-tpl.bin u-boot-tpl.bin
+
+        # If TPL doesn't exist (RK3066 may not use TPL), create a stub
+        if [ ! -f u-boot-tpl.bin ] && [ -f u-boot-spl.bin ]; then
+          echo "No TPL found — creating minimal stub (RK3066 may not use TPL)"
+          printf "RK30" > u-boot-tpl.bin
+          truncate -s 1024 u-boot-tpl.bin
+        fi
+
+        if [ ! -f u-boot-spl.bin ]; then
+          echo "ERROR: No u-boot-spl.bin found anywhere"
+          find . -name 'u-boot-spl*' -type f 2>/dev/null
+          exit 1
+        fi
+
+        # ── Manual packaging with boot_merger or raw fallback ──
         printf "RK30" > tplspl.bin
         cat u-boot-tpl.bin >> tplspl.bin
         truncate -s 48 tplspl.bin 2>/dev/null || true
         truncate -s 48 u-boot-spl.bin 2>/dev/null || true
 
-        # Create boot_merger config
         cat > config-nand.ini <<'EOF'
         [CHIP_NAME]
         NAME=RK30
@@ -156,12 +191,11 @@ jobs:
         PATH=rk3066-uboot-nand.bin
         EOF
 
-        # Use boot_merger if available, otherwise use raw fallback
         if [ -f tools/boot_merger ]; then
           tools/boot_merger --verbose config-nand.ini
           echo "boot_merger packaging complete ✓"
         else
-          echo "boot_merger not found — using raw TPL+SPL fallback"
+          echo "boot_merger not found — raw TPL+SPL fallback"
           cat u-boot-tpl.bin u-boot-spl.bin > rk3066-uboot-nand.bin
         fi
 
