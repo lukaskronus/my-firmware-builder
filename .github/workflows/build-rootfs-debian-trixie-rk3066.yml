@@ -358,21 +358,17 @@ jobs:
       run: |
         SD_IMAGE="rk3066-sdcard.img"
         SD_SIZE_MB=2048
-        BOOT_START_MB=16          # Leave room for U-Boot at sectors 64+
+        BOOT_START_MB=16
 
-        # Create image
         dd if=/dev/zero of=${SD_IMAGE} bs=1M count=${SD_SIZE_MB} status=progress
 
-        # Partition: start at 16MiB so U-Boot fits before partition 1
         sudo parted -s ${SD_IMAGE} \
           mklabel msdos \
           mkpart primary fat32 ${BOOT_START_MB}MiB $((128 + 16))MiB \
           mkpart primary ext4  $((128 + 16))MiB 100% \
           set 1 boot on
 
-        # ── Write U-Boot at sector 64 (where BootROM looks for it) ──
-        # u-boot-rockchip.bin already has the RK30 header + SPL at the
-        # correct offset. This is what the BootROM needs to find.
+        # ── Write U-Boot at sector 64 (where BootROM looks for SD boot) ──
         sudo dd if=uboot/u-boot-rockchip.bin \
           of=${SD_IMAGE} \
           bs=512 seek=64 conv=notrunc
@@ -396,14 +392,14 @@ jobs:
         sudo cp boot_files/extlinux/extlinux.conf  mnt_boot/extlinux/
 
         # extlinux.conf needs to point to MMC, not USB
-        sudo tee mnt_boot/extlinux/extlinux.conf >/dev/null <<'EOF'
+        sudo tee mnt_boot/extlinux/extlinux.conf >/dev/null <<'EXTEOF'
         label Debian Trixie RK3066 (SD Card)
             kernel /boot/zImage
             fdt    /boot/rk3066a-mk808.dtb
             append root=/dev/mmcblk0p2 rootwait rootfstype=ext4 \
                    console=ttyS2,115200n8 earlyprintk \
                    init=/sbin/init
-        EOF
+        EXTEOF
 
         # /rootfs partition
         sudo rsync -aAX \
@@ -418,6 +414,9 @@ jobs:
           sudo mkdir -p mnt_root/$d
         done
 
+        # Put U-Boot binary on the boot partition too (for later NAND flashing)
+        sudo cp uboot/u-boot-rockchip.bin mnt_boot/
+
         sync
         sudo umount mnt_boot mnt_root
         sudo losetup -d "$LOOP"
@@ -426,8 +425,6 @@ jobs:
         xz -T0 -v ${SD_IMAGE}
         ls -lh ${SD_IMAGE}.xz
 
-        # Move to upload location
-        mv ${SD_IMAGE}.xz rk3066-sdcard.img.xz
         echo "Self-bootable SD card image ready ✓"
 
     - name: Create USB image
