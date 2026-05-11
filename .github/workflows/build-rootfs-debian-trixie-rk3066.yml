@@ -1,18 +1,46 @@
-name: RK3066 Image Builder
+name: RK3066 Hybrid Boot Image Builder
+
+# =============================================================================
+# BOOT STRATEGY
+# =============================================================================
+#
+#   NAND  -->  U-Boot (patched for distro boot, flashed once via RKAndroidTool)
+#   USB   -->  kernel + extlinux.conf + full Debian Trixie rootfs
+#
+#   Boot sequence:
+#     1. RK3066 BootROM starts
+#     2. Loads U-Boot from NAND
+#     3. U-Boot scans USB drive for extlinux.conf
+#     4. Kernel boots, mounts rootfs from USB (/dev/sda2)
+#     5. Full Debian Trixie runs entirely from USB
+#
+#   This workflow produces TWO output files:
+#
+#     rk3066-uboot-nand.bin
+#       -> Flash to NAND ONCE using RKAndroidTool on Windows
+#       -> Never needs to be touched again
+#
+#     rk3066-usb.img.xz
+#       -> Flash to USB drive using balenaEtcher on Windows
+#       -> p1 = FAT32 /boot  (kernel + DTBs + extlinux.conf)
+#       -> p2 = ext4  /      (full Debian Trixie rootfs)
+#
+# =============================================================================
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
 
 env:
   ARCH: arm
   CROSS_COMPILE: arm-linux-gnueabihf-
-  JOBS: $(nproc)
+
   DEBIAN_RELEASE: trixie
   DEBIAN_ARCH: armhf
-  IMAGE_NAME: rk3066-debian-trixie.img
-  IMAGE_SIZE_MB: 2048        # total image size  (increase if rootfs is bigger)
-  BOOT_PART_MB: 64           # size of the FAT32 /boot partition
-  # U-Boot is written raw before the first partition, sector 64 (0x40)
+
+  USB_IMAGE_NAME: rk3066-usb.img
+  USB_IMAGE_SIZE_MB: 2048
+  BOOT_PART_MB: 128
+
   UBOOT_SECTOR: 64
 
 jobs:
@@ -22,11 +50,14 @@ jobs:
       contents: read
 
     steps:
+
+    # -------------------------------------------------------------------------
     - name: Checkout workflow repo
-      uses: actions/checkout@v6
+      uses: actions/checkout@v4
       with:
         path: workflow-repo
 
+    # -------------------------------------------------------------------------
     - name: Install dependencies
       run: |
         sudo apt-get update -qq
@@ -41,80 +72,184 @@ jobs:
           python3 python3-pyelftools \
           swig libfdt-dev \
           u-boot-tools \
-          xz-utils zip curl ca-certificates
+          xz-utils zip curl ca-certificates \
+          rsync
 
-    - name: Clone U-Boot repo
+    # =========================================================================
+    # U-BOOT
+    # Patch defconfig to enable distro boot + USB storage scanning
+    # =========================================================================
+
+    - name: Clone U-Boot
       run: |
         git clone --depth=1 https://github.com/archeYR/u-boot.git uboot
         echo "U-Boot cloned ✓"
 
-    - name: Clone kernel repo
+    - name: Patch mk808_defconfig for USB distro boot
+      working-directory: uboot
       run: |
-        git clone --depth=1 --branch=bq-curie https://github.com/archeYR/linux.git kernel
-        echo "Kernel cloned ✓"
+        # Remove SD_BOOT — distro boot replaces it
+        sed -i '/CONFIG_SD_BOOT/d' configs/mk808_defconfig
+
+        # Append USB distro boot support
+        cat >> configs/mk808_defconfig <<'EOF'
+
+        # Patched: enable distro boot scanning USB first, MMC second
+        CONFIG_DISTRO_DEFAULTS=y
+        CONFIG_USB_STORAGE=y
+        CONFIG_USB_HOST=y
+        CONFIG_BOOTCOMMAND="run distro_bootcmd"
+        CONFIG_BOOT_TARGETS="usb mmc"
+        EOF
+
+        echo "Patched defconfig ✓"
+        grep -E "DISTRO|USB_STORAGE|BOOT_TARGETS|SD_BOOT" configs/mk808_defconfig
 
     - name: Build U-Boot
       working-directory: uboot
       run: |
-        make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+        make ARCH=${{ env.ARCH }} \
+             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
              mk808_defconfig
-        make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+
+        make ARCH=${{ env.ARCH }} \
+             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
              -j$(nproc) all
+
         echo "U-Boot build complete ✓"
-        ls -lh u-boot.bin u-boot-dtb.bin 2>/dev/null || ls -lh u-boot* | head -20
+        ls -lh u-boot-tpl.bin u-boot-spl.bin u-boot.bin 2>/dev/null \
+          || ls -lh u-boot* | head -20
+
+    # -------------------------------------------------------------------------
+    # Package U-Boot into Rockchip NAND loader format
+    # RKAndroidTool expects this specific binary format
+    # -------------------------------------------------------------------------
+    - name: Package U-Boot for NAND (RKAndroidTool format)
+      working-directory: uboot
+      run: |
+        # Combine TPL + SPL into one loader binary with RK30 header
+        printf "RK30" > tplspl.bin
+        cat u-boot-tpl.bin >> tplspl.bin
+        truncate -s 48 tplspl.bin 2>/dev/null || true
+        truncate -s 48 u-boot-spl.bin 2>/dev/null || true
+
+        # Create boot_merger config
+        cat > config-nand.ini <<'EOF'
+        [CHIP_NAME]
+        NAME=RK30
+        [VERSION]
+        MAJOR=2
+        MINOR=21
+        [CODE471_OPTION]
+        NUM=1
+        Path1=30_LPDDR2_300MHz_DD.bin
+        [CODE472_OPTION]
+        NUM=1
+        Path1=rk30usbplug.bin
+        [LOADER_OPTION]
+        NUM=2
+        LOADER1=FlashData
+        LOADER2=FlashBoot
+        FlashData=tplspl.bin
+        FlashBoot=u-boot-spl.bin
+        [OUTPUT]
+        PATH=rk3066-uboot-nand.bin
+        EOF
+
+        # Use boot_merger if available, otherwise use raw fallback
+        if [ -f tools/boot_merger ]; then
+          tools/boot_merger --verbose config-nand.ini
+          echo "boot_merger packaging complete ✓"
+        else
+          echo "boot_merger not found — using raw TPL+SPL fallback"
+          cat u-boot-tpl.bin u-boot-spl.bin > rk3066-uboot-nand.bin
+        fi
+
+        ls -lh rk3066-uboot-nand.bin
+        cp rk3066-uboot-nand.bin ../rk3066-uboot-nand.bin
+        echo "NAND loader ready ✓"
+
+    # =========================================================================
+    # KERNEL
+    # USB storage drivers must be built-in (=y), NOT modules (=m)
+    # If they are modules, the kernel cannot find the USB drive to mount rootfs
+    # =========================================================================
+
+    - name: Clone kernel
+      run: |
+        git clone --depth=1 --branch=bq-curie \
+          https://github.com/archeYR/linux.git kernel
+        echo "Kernel cloned ✓"
 
     - name: Build kernel
       working-directory: kernel
       run: |
-        make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+        make ARCH=${{ env.ARCH }} \
+             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
              multi_v7_defconfig
 
-        # Optionally enable any extra options here with scripts/config
-        # make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} menuconfig
+        # Force USB storage built-in — critical for USB rootfs
+        ./scripts/config \
+          --enable CONFIG_USB \
+          --enable CONFIG_USB_STORAGE \
+          --enable CONFIG_USB_EHCI_HCD \
+          --enable CONFIG_USB_EHCI_ROCKCHIP \
+          --enable CONFIG_USB_OHCI_HCD \
+          --enable CONFIG_SCSI \
+          --enable CONFIG_BLK_DEV_SD \
+          --enable CONFIG_EXT4_FS \
+          --enable CONFIG_EXT4_USE_FOR_EXT2 \
+          --enable CONFIG_VFAT_FS \
+          --enable CONFIG_FAT_DEFAULT_UTF8
 
-        make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+        make ARCH=${{ env.ARCH }} \
+             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
              -j$(nproc) zImage dtbs modules
+
         echo "Kernel build complete ✓"
 
-    - name: Bootstrap Debian Trixie (stage 1 — no chroot)
+    # =========================================================================
+    # DEBIAN ROOTFS
+    # =========================================================================
+
+    - name: Bootstrap Debian Trixie — stage 1
       run: |
         sudo debootstrap \
           --arch=${{ env.DEBIAN_ARCH }} \
           --foreign \
-          --include=systemd,systemd-sysv,dbus,udev,kmod,\
+          --include=\
+        systemd,systemd-sysv,dbus,udev,kmod,\
         iproute2,iputils-ping,net-tools,\
         openssh-server,sudo,\
         bash-completion,vim-tiny,htop,\
         apt-utils,locales,tzdata,\
         wireless-tools,wpasupplicant,\
         ca-certificates,curl,wget,\
-        dosfstools,e2fsprogs,gdisk,parted \
+        dosfstools,e2fsprogs,gdisk,parted,\
+        usbutils \
           ${{ env.DEBIAN_RELEASE }} \
           rootfs \
           http://deb.debian.org/debian
         echo "Debootstrap stage 1 complete ✓"
 
-    - name: Bootstrap Debian Trixie (stage 2 — inside QEMU)
+    - name: Bootstrap Debian Trixie — stage 2
       run: |
-        # Copy static QEMU binary so the ARM rootfs can run inside x86 CI
         sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
         sudo update-binfmts --enable qemu-arm
-        # Complete the bootstrap
         sudo chroot rootfs /debootstrap/debootstrap --second-stage
         echo "Debootstrap stage 2 complete ✓"
 
     - name: Configure rootfs
       run: |
-        # -- hostname --
         echo "rk3066" | sudo tee rootfs/etc/hostname
 
-        # -- fstab --
+        # fstab — both partitions are on the USB drive
         sudo tee rootfs/etc/fstab <<'EOF'
-        /dev/mmcblk0p2  /        ext4  defaults,noatime  0 1
-        /dev/mmcblk0p1  /boot    vfat  defaults          0 2
+        /dev/sda2   /       ext4    defaults,noatime    0 1
+        /dev/sda1   /boot   vfat    defaults            0 2
         EOF
 
-        # -- networking (systemd-networkd) --
+        # Networking
         sudo mkdir -p rootfs/etc/systemd/network
         sudo tee rootfs/etc/systemd/network/20-wired.network <<'EOF'
         [Match]
@@ -126,95 +261,92 @@ jobs:
         sudo chroot rootfs systemctl enable systemd-networkd || true
         sudo chroot rootfs systemctl enable systemd-resolved  || true
 
-        # -- set root password --
+        # Root password (change this after first boot!)
         echo "root:1234" | sudo chroot rootfs chpasswd
-        # Allow root SSH login (handy for first boot; tighten later)
-        sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' \
-             rootfs/etc/ssh/sshd_config || true
+
+        # Allow root SSH for first boot
+        sudo sed -i \
+          's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' \
+          rootfs/etc/ssh/sshd_config || true
         sudo chroot rootfs systemctl enable ssh || true
 
-        echo "rootfs configuration complete ✓"
+        echo "rootfs configured ✓"
 
     - name: Install kernel modules into rootfs
       working-directory: kernel
       run: |
-        sudo make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+        sudo make ARCH=${{ env.ARCH }} \
+             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
              INSTALL_MOD_PATH=../rootfs \
              modules_install
-        echo "Kernel modules installed ✓"
+        echo "Modules installed ✓"
 
-    - name: Copy kernel and DTBs to rootfs /boot
+    # =========================================================================
+    # USB IMAGE
+    # p1: FAT32 /boot  — zImage, DTBs, extlinux/extlinux.conf
+    # p2: ext4  /      — full Debian rootfs
+    # No U-Boot written here — U-Boot lives on NAND
+    # =========================================================================
+
+    - name: Prepare boot files
       run: |
-        sudo mkdir -p rootfs/boot
+        mkdir -p boot_files/extlinux
 
-        # Kernel image
-        sudo cp kernel/arch/arm/boot/zImage rootfs/boot/zImage
+        cp kernel/arch/arm/boot/zImage boot_files/
 
-        # Device tree blobs — copy all RK3066 DTBs found
         find kernel/arch/arm/boot/dts -name "rk3066*.dtb" \
-          -exec sudo cp {} rootfs/boot/ \;
+          -exec cp {} boot_files/ \;
 
-        # Create a simple boot script for U-Boot
-        sudo mkdir -p rootfs/boot/extlinux
-        sudo tee rootfs/boot/extlinux/extlinux.conf <<'EOF'
+        echo "Available DTBs:"
+        ls boot_files/*.dtb 2>/dev/null || echo "WARNING: No DTBs found!"
+
+        # extlinux.conf — root= points to USB p2
+        cat > boot_files/extlinux/extlinux.conf <<'EOF'
         label Debian Trixie RK3066
             kernel /boot/zImage
             fdt    /boot/rk3066a-mk808.dtb
-            append root=/dev/mmcblk0p2 rootwait console=ttyS2,115200n8 earlyprintk
+            append root=/dev/sda2 rootwait rootfstype=ext4 \
+                   console=ttyS2,115200n8 earlyprintk \
+                   usb-storage.delay_use=0 \
+                   init=/sbin/init
         EOF
 
-        echo "Kernel and DTBs copied to rootfs/boot ✓"
-        ls -lh rootfs/boot/
+        echo "Boot files ready ✓"
+        cat boot_files/extlinux/extlinux.conf
 
-    - name: Create disk image
+    - name: Create USB image
       run: |
-        # Allocate the image file
-        dd if=/dev/zero of=${{ env.IMAGE_NAME }} \
-           bs=1M count=${{ env.IMAGE_SIZE_MB }} status=progress
+        dd if=/dev/zero of=${{ env.USB_IMAGE_NAME }} \
+           bs=1M count=${{ env.USB_IMAGE_SIZE_MB }} status=progress
 
-        # Partition table:
-        #   p1 — FAT32 /boot  (64 MiB)
-        #   p2 — ext4  /      (rest)
-        # Partitions start at sector 2048 (1 MiB offset) to leave room for U-Boot
-        sudo parted -s ${{ env.IMAGE_NAME }} \
+        sudo parted -s ${{ env.USB_IMAGE_NAME }} \
           mklabel msdos \
           mkpart primary fat32 1MiB $(( ${{ env.BOOT_PART_MB }} + 1 ))MiB \
           mkpart primary ext4  $(( ${{ env.BOOT_PART_MB }} + 1 ))MiB 100% \
           set 1 boot on
 
-        echo "Partition table created ✓"
-        sudo parted -s ${{ env.IMAGE_NAME }} print
+        echo "Partition table ✓"
+        sudo parted -s ${{ env.USB_IMAGE_NAME }} print
 
-    - name: Write U-Boot to image
+    - name: Populate USB image
       run: |
-        # RK3066 typically expects U-Boot at sector 64 (0x8000 offset)
-        # Adjust the skip/seek values and the binary name for your board
-        UBOOT_BIN=$(ls uboot/u-boot-dtb.bin uboot/u-boot.bin 2>/dev/null | head -1)
-        echo "Writing $UBOOT_BIN at sector ${{ env.UBOOT_SECTOR }}"
-        sudo dd if="$UBOOT_BIN" of=${{ env.IMAGE_NAME }} \
-             bs=512 seek=${{ env.UBOOT_SECTOR }} conv=notrunc status=progress
-        echo "U-Boot written ✓"
+        LOOP=$(sudo losetup --find --show --partscan ${{ env.USB_IMAGE_NAME }})
+        echo "Loop: $LOOP"
 
-    - name: Format partitions and populate image
-      run: |
-        # Map the image partitions to loop devices
-        LOOP=$(sudo losetup --find --show --partscan ${{ env.IMAGE_NAME }})
-        echo "Loop device: $LOOP"
-
-        # Format
-        sudo mkfs.vfat -n BOOT "${LOOP}p1"
+        sudo mkfs.vfat -n BOOT   "${LOOP}p1"
         sudo mkfs.ext4 -L rootfs "${LOOP}p2"
 
-        # Mount and copy
         mkdir -p mnt_boot mnt_root
         sudo mount "${LOOP}p1" mnt_boot
         sudo mount "${LOOP}p2" mnt_root
 
-        # Copy /boot from rootfs to the FAT partition
-        sudo cp -r rootfs/boot/* mnt_boot/
+        # Populate /boot partition
+        sudo mkdir -p mnt_boot/extlinux
+        sudo cp boot_files/zImage              mnt_boot/
+        sudo cp boot_files/*.dtb               mnt_boot/ 2>/dev/null || true
+        sudo cp boot_files/extlinux/extlinux.conf mnt_boot/extlinux/
 
-        # Copy everything else to ext4 partition
-        # rsync keeps permissions/symlinks better than cp -a across loop devices
+        # Populate rootfs partition (skip /boot — it's on p1)
         sudo rsync -aAX \
           --exclude=/boot \
           --exclude=/proc \
@@ -223,26 +355,37 @@ jobs:
           --exclude=/run \
           rootfs/ mnt_root/
 
-        # Re-create essential empty dirs
-        for d in proc sys dev run boot; do
+        # Recreate empty mountpoints
+        for d in boot proc sys dev run; do
           sudo mkdir -p mnt_root/$d
         done
 
-        # Sync and unmount
         sync
         sudo umount mnt_boot mnt_root
         sudo losetup -d "$LOOP"
+        echo "USB image populated ✓"
 
-        echo "Image populated ✓"
+    # =========================================================================
+    # COMPRESS & UPLOAD
+    # =========================================================================
 
-    - name: Compress image
+    - name: Compress USB image
       run: |
-        xz -T0 -v ${{ env.IMAGE_NAME }}
-        ls -lh ${{ env.IMAGE_NAME }}.xz
+        xz -T0 -v ${{ env.USB_IMAGE_NAME }}
+        ls -lh ${{ env.USB_IMAGE_NAME }}.xz
 
-    - name: Upload image artifact
+    - name: Upload U-Boot NAND binary
       uses: actions/upload-artifact@v4
       with:
-        name: rk3066-debian-trixie-image
-        path: ${{ env.IMAGE_NAME }}.xz
+        name: rk3066-uboot-nand
+        # Flash this to NAND using RKAndroidTool on Windows — do this once
+        path: rk3066-uboot-nand.bin
+        retention-days: 30
+
+    - name: Upload USB image
+      uses: actions/upload-artifact@v4
+      with:
+        name: rk3066-usb-image
+        # Flash this to USB drive using balenaEtcher on Windows
+        path: ${{ env.USB_IMAGE_NAME }}.xz
         retention-days: 7
