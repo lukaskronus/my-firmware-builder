@@ -1,10 +1,12 @@
 name: Build U-Boot for OrangePi R1
 
 on:
+  # Run manually from the Actions tab
   workflow_dispatch:
+  # Also run automatically when you push changes to your patch files
   push:
     paths:
-      - 'userpatches/orangepi-r1-expansion-board.patch'
+      - 'userpatches/**'
 
 jobs:
   build:
@@ -22,7 +24,7 @@ jobs:
       - name: Copy userpatches into Armbian build tree
         run: |
           mkdir -p armbian-build/userpatches/u-boot/u-boot-sunxi-current
-          cp userpatches/orangepi-r1-expansion-board.patch \
+          cp userpatches/*.patch \
              armbian-build/userpatches/u-boot/u-boot-sunxi-current/
 
       - name: Compile U-Boot
@@ -36,6 +38,12 @@ jobs:
             BUILD_DESKTOP="no" \
             KERNEL_CONFIGURE="no" \
             COMPRESS_OUTPUTIMAGE="no"
+
+      - name: List output directory (debug)
+        if: always()
+        run: |
+          echo "=== Contents of armbian-build/output/debs/ ==="
+          find armbian-build/output/debs/ -type f 2>/dev/null || echo "Directory not found or empty"
 
       - name: Upload compiled U-Boot as artifact
         uses: actions/upload-artifact@v7
