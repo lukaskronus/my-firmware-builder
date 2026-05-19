@@ -23,9 +23,9 @@ jobs:
 
       - name: Copy userpatches into Armbian build tree
         run: |
-          mkdir -p armbian-build/userpatches/u-boot/u-boot-sunxi-current
+          mkdir -p armbian-build/userpatches/u-boot/u-boot-sunxi
           cp userpatches/*.patch \
-             armbian-build/userpatches/u-boot/u-boot-sunxi-current/
+             armbian-build/userpatches/u-boot/u-boot-sunxi/
 
       - name: Compile U-Boot
         run: |
