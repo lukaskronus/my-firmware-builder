@@ -1,7 +1,7 @@
 --- a/arch/arm/dts/sun8i-h2-plus-orangepi-r1.dts
 +++ b/arch/arm/dts/sun8i-h2-plus-orangepi-r1.dts
 @@ -77,6 +77,14 @@
-&spi0 {
+ &spi0 {
  	};
  };
  
