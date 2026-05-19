@@ -44,10 +44,10 @@ jobs:
         run: |
           echo "=== Contents of armbian-build/output/debs/ ==="
           find armbian-build/output/debs/ -type f 2>/dev/null || echo "Directory not found or empty"
-
+ 
       - name: Upload compiled U-Boot as artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: u-boot-orangepi-r1
-          path: armbian-build/output/debs/linux-u-boot-current-orangepi-r1_*.deb
-          retention-days: 7
+          path: armbian-build/output/debs/*.deb
+          retention-days: 30
