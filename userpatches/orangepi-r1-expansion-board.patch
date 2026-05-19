@@ -1,25 +1,22 @@
 --- a/arch/arm/dts/sun8i-h2-plus-orangepi-r1.dts
 +++ b/arch/arm/dts/sun8i-h2-plus-orangepi-r1.dts
-@@ -77,6 +77,18 @@ &spi0 {
+@@ -77,6 +77,14 @@
+&spi0 {
  	};
  };
  
 +&ehci2 {
 +	status = "okay";
 +};
-+
 +&ehci3 {
 +	status = "okay";
 +};
-+
 +&ohci2 {
 +	status = "okay";
 +};
-+
 +&ohci3 {
 +	status = "okay";
 +};
-+
  &ohci1 {
  	/*
  	 * RTL8152B USB-Ethernet adapter is connected to USB1,
