@@ -24,7 +24,7 @@ jobs:
           mkdir -p armbian-build/userpatches/u-boot/u-boot-sunxi
           cp -v userpatches/*.patch armbian-build/userpatches/u-boot/u-boot-sunxi/
           echo "=== Patch files copied ==="
-          ls -la armbian-build/userpatches/u-boot/u-boot-sunxi-current/
+          ls -la armbian-build/userpatches/u-boot/u-boot-sunxi/
 
       - name: Fix line endings on patch files
         run: |
