@@ -312,7 +312,7 @@ jobs:
             '\t\t * supported but ECC mode (1024-byte steps) works fine.\n'
             '\t\t */\n'
             '\t\tdev_warn(nfc->dev,\n'
-            '\t\t\t "raw mode unsupported for this chip (%d > %ld); ECC mode only\\n",\n'
+            '\t\t\t "raw mode unsupported for this chip (%d > %ld); ECC mode only\\\\n",\n'
             '\t\t\t raw_writesize, NFC_CMD_RAW_LEN);\n'
             '\t}'
         )
