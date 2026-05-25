@@ -2,6 +2,11 @@ name: Build Armbian Trixie with Kernel S812
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_armbian:
+        description: 'Skip Armbian build (kernel/DTS changes only)'
+        type: boolean
+        default: false
 
 env:
   ARMBIAN_REPO:   https://github.com/SLAzurin/build-armbian-custom.git
@@ -179,6 +184,7 @@ jobs:
         print("rootfs-create.sh patched successfully.")
         PYEOF
     - name: Build Armbian base image
+      if: ${{ inputs.skip_armbian != true }}
       run: |
         cd armbian-build
         sudo COLUMNS=160 \
@@ -440,6 +446,7 @@ jobs:
         if-no-files-found: error
 
     - name: Install kernel, DTB, and modules into image
+      if: ${{ inputs.skip_armbian != true }}
       run: |
         IMAGE=$(ls armbian-build/output/images/*.img | head -1)
         echo "Target image: $IMAGE"
