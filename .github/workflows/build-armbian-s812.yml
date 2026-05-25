@@ -82,7 +82,7 @@ jobs:
         mv userpatches.s8xx userpatches
 
     - name: Cache Armbian rootfs
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: armbian-build/cache/rootfs
         key: armbian-rootfs-${{ steps.shas.outputs.armbian_sha }}-trixie
@@ -91,7 +91,7 @@ jobs:
           armbian-rootfs-
 
     - name: Cache Armbian apt packages
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: armbian-build/cache/aptcache
         key: armbian-aptcache-trixie-${{ steps.shas.outputs.armbian_sha }}
@@ -214,7 +214,7 @@ jobs:
 
     - name: Upload Armbian build logs
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: armbian-build-logs-${{ github.run_number }}
         path: armbian-build/output/logs/
@@ -223,7 +223,7 @@ jobs:
 
     - name: Cache kernel source tree
       id: kernel-src-cache
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: linux-src
         key: kernel-src-${{ steps.shas.outputs.kernel_sha }}
@@ -258,7 +258,7 @@ jobs:
           echo "WARNING: &nfc block not found — check your DTS file"
 
     - name: Cache kernel ccache objects
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.ccache
         key: kernel-ccache-${{ steps.shas.outputs.kernel_sha }}
