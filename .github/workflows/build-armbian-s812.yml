@@ -1,4 +1,4 @@
-name: Armbian Trixie for S812 with custom dts
+name: Build Armbian Trixie with Kernel S812
 
 on:
   workflow_dispatch:
@@ -241,21 +241,36 @@ jobs:
         KERNEL_DTS_DIR="linux-src/arch/arm/boot/dts/amlogic"
         REPO_DTS="my-repo/${{ env.REPO_DTS_DIR }}"
 
-        echo "=== DTS files in your repo ==="
-        ls -lh "$REPO_DTS/" || echo "(directory not found — check REPO_DTS_DIR)"
+        echo "=== DTS files found in your repo ==="
+        ls -lh "$REPO_DTS/" 2>/dev/null || {
+          echo "ERROR: Directory '$REPO_DTS' not found."
+          echo "Check that REPO_DTS_DIR='${{ env.REPO_DTS_DIR }}' matches your repo layout."
+          exit 1
+        }
 
-        for f in meson8m2-m8s.dts; do
+        # Inject each file if it exists in your repo
+        for f in meson8m2-m8s.dts meson8m2.dtsi meson8.dtsi; do
           if [ -f "$REPO_DTS/$f" ]; then
-            echo "Injecting $f ..."
             cp "$REPO_DTS/$f" "$KERNEL_DTS_DIR/$f"
+            echo "Injected: $f"
           else
-            echo "Skipping $f (not in your repo, using upstream)"
+            echo "Skipped (not in repo, using upstream): $f"
           fi
         done
 
-        echo "=== Verifying nfc status in injected DTS ==="
-        grep -A3 "^&nfc" "$KERNEL_DTS_DIR/meson8m2-m8s.dts" || \
-          echo "WARNING: &nfc block not found — check your DTS file"
+        echo ""
+        echo "=== Verifying &nfc status in injected DTS ==="
+        if grep -A5 "^&nfc" "$KERNEL_DTS_DIR/meson8m2-m8s.dts" | grep -q "status.*okay"; then
+          echo "OK: &nfc { status = okay } found"
+        else
+          echo "WARNING: &nfc status = okay NOT found — NAND will not be recognized!"
+          echo "--- Current &nfc block ---"
+          grep -A5 "^&nfc" "$KERNEL_DTS_DIR/meson8m2-m8s.dts" || true
+        fi
+
+        echo ""
+        echo "=== Verifying partition table in injected DTS ==="
+        grep -E "label|reg = " "$KERNEL_DTS_DIR/meson8m2-m8s.dts" | grep -A1 "label" || true
 
     - name: Cache kernel ccache objects
       uses: actions/cache@v5
@@ -272,7 +287,7 @@ jobs:
         echo "CC=ccache arm-linux-gnueabihf-gcc"  >> "$GITHUB_ENV"
         echo "CXX=ccache arm-linux-gnueabihf-g++" >> "$GITHUB_ENV"
 
-    - name: Seed kernel config
+    - name: Seed kernel config and enable NAND/MTD/UBI
       run: |
         cp my-repo/config_files/config-aml-s812 linux-src/.config
         cd linux-src
@@ -282,64 +297,56 @@ jobs:
           's@# CONFIG_POSIX_MQUEUE is not set@CONFIG_POSIX_MQUEUE=y\nCONFIG_POSIX_MQUEUE_SYSCTL=y@g' \
           .config
 
-        # -----------------------------------------------------------------
-        # NEW: Enable NAND / MTD / UBI support so the kernel can see and
-        # mount the NAND flash on the M8S board.
-        #
-        # We use sed to either flip "is not set" lines or append if missing,
-        # then let olddefconfig resolve any remaining dependencies cleanly.
-        # -----------------------------------------------------------------
+        # Helper: safely enable a kernel config option regardless of current state
         patch_kconfig() {
           local key="$1"
-          local val="$2"          # y or m
+          local val="$2"
           if grep -q "^# ${key} is not set" .config; then
             sed -i "s@^# ${key} is not set@${key}=${val}@g" .config
-            echo "  enabled: ${key}=${val}"
+            echo "  enabled:  ${key}=${val}"
           elif grep -q "^${key}=" .config; then
             sed -i "s@^${key}=.*@${key}=${val}@g" .config
-            echo "  updated: ${key}=${val}"
+            echo "  updated:  ${key}=${val}"
           else
             echo "${key}=${val}" >> .config
             echo "  appended: ${key}=${val}"
           fi
         }
 
-        echo "--- Patching NAND/MTD/UBI kernel config options ---"
-
-        # Core MTD subsystem
-        patch_kconfig CONFIG_MTD                    y
-        patch_kconfig CONFIG_MTD_BLOCK              y   # /dev/mtdblockN access
-        patch_kconfig CONFIG_MTD_CHAR               y   # /dev/mtdN  access
-
-        # NAND core and Amlogic driver
-        patch_kconfig CONFIG_MTD_NAND_CORE          y
+        echo "--- Enabling NAND / MTD / UBI kernel options ---"
+        patch_kconfig CONFIG_MTD                     y
+        patch_kconfig CONFIG_MTD_BLOCK               y
+        patch_kconfig CONFIG_MTD_CHAR                y
+        patch_kconfig CONFIG_MTD_OF_PARTS            y
+        patch_kconfig CONFIG_MTD_CMDLINE_PARTS       y
+        patch_kconfig CONFIG_MTD_NAND_CORE           y
         patch_kconfig CONFIG_MTD_NAND_ECC_SW_HAMMING y
-        patch_kconfig CONFIG_MTD_NAND_MESON         y   # amlogic,meson8-nfc driver
+        patch_kconfig CONFIG_MTD_NAND_MESON          y
+        patch_kconfig CONFIG_MTD_UBI                 y
+        patch_kconfig CONFIG_MTD_UBI_WL_THRESHOLD    4096
+        patch_kconfig CONFIG_MTD_UBI_BEB_LIMIT       20
+        patch_kconfig CONFIG_UBIFS_FS                y
 
-        # UBI layer — needed to mount UBIFS rootfs on NAND
-        patch_kconfig CONFIG_MTD_UBI                y
-        patch_kconfig CONFIG_MTD_UBI_WL_THRESHOLD   4096
-        patch_kconfig CONFIG_MTD_UBI_BEB_LIMIT      20
-        patch_kconfig CONFIG_UBIFS_FS               y
-
-        # Optional but useful: expose MTD partitions via cmdline / OF
-        patch_kconfig CONFIG_MTD_OF_PARTS           y
-        patch_kconfig CONFIG_MTD_CMDLINE_PARTS      y
-
-        echo "--- Running olddefconfig to resolve dependencies ---"
+        echo "--- Resolving config dependencies ---"
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
 
-        echo "--- Verifying key options are set ---"
+        echo "--- Verifying critical options ---"
+        MISSING=0
         for key in CONFIG_MTD CONFIG_MTD_NAND_CORE CONFIG_MTD_NAND_MESON \
-                   CONFIG_MTD_UBI CONFIG_UBIFS_FS; do
-          val=$(grep "^${key}=" .config || echo "NOT SET")
+                   CONFIG_MTD_UBI CONFIG_UBIFS_FS CONFIG_MTD_OF_PARTS; do
+          val=$(grep "^${key}=" .config 2>/dev/null || echo "NOT SET")
           echo "  ${key}: ${val}"
+          [ "$val" = "NOT SET" ] && MISSING=$((MISSING+1))
         done
+        if [ $MISSING -gt 0 ]; then
+          echo "WARNING: $MISSING critical options not set — NAND may not work"
+        else
+          echo "All critical NAND options confirmed set."
+        fi
 
     - name: Build kernel uImage, DTB, and modules
       run: |
         cd linux-src
-        # Build uImage + all DTBs + modules in one pass
         make -j$(nproc) \
           ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
@@ -349,12 +356,28 @@ jobs:
           LOADADDR=0x00208000 \
           uImage dtbs modules
 
+        echo ""
         echo "=== Verifying meson8m2-m8s.dtb was built ==="
-        ls -lh arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb || \
-          echo "ERROR: DTB not found — check DTS compilation"
+        if [ -f arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb ]; then
+          ls -lh arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb
+          echo "DTB build: OK"
+        else
+          echo "ERROR: meson8m2-m8s.dtb not found — DTS compilation failed!"
+          echo "--- All Meson8 DTBs actually built ---"
+          find arch/arm/boot/dts/amlogic/ -name "meson8*" 2>/dev/null || true
+          exit 1
+        fi
 
     - name: Show ccache statistics
       run: ccache --show-stats
+
+    - name: Upload DTB as standalone artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: meson8m2-m8s-dtb-build${{ github.run_number }}
+        path: linux-src/arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb
+        retention-days: 30
+        if-no-files-found: error
 
     - name: Install kernel, DTB, and modules into image
       run: |
@@ -368,23 +391,25 @@ jobs:
         sudo mount "${LOOP}p1" /tmp/mnt_boot
         sudo mount "${LOOP}p2" /tmp/mnt_root
 
+        echo "=== Current boot partition contents ==="
+        ls -lh /tmp/mnt_boot/
+
         # Back up old uImage if present
         [ -f /tmp/mnt_boot/uImage ] && \
           sudo cp /tmp/mnt_boot/uImage /tmp/mnt_boot/uImage.bak
 
         # Install uImage
         sudo cp linux-src/arch/arm/boot/uImage /tmp/mnt_boot/uImage
+        echo "uImage installed."
 
-        # -----------------------------------------------------------------
-        # NEW: Install the compiled DTB into the boot partition.
-        # The stock U-Boot on M8S loads the DTB from the boot partition;
-        # without this the board would use a stale/wrong DTB and the NAND
-        # controller would not be seen.
-        # -----------------------------------------------------------------
+        # Install DTB
         sudo cp \
           linux-src/arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb \
           /tmp/mnt_boot/meson8m2-m8s.dtb
         echo "DTB installed: meson8m2-m8s.dtb"
+
+        echo "=== Boot partition after install ==="
+        ls -lh /tmp/mnt_boot/
 
         # Install kernel modules
         sudo make -C linux-src \
@@ -393,7 +418,7 @@ jobs:
           INSTALL_MOD_PATH=/tmp/mnt_root \
           modules_install
 
-        # Save finalised .config to /boot — useful as a base for future builds
+        # Save finalised .config to /boot
         sudo cp linux-src/.config /tmp/mnt_boot/config-6.20.0-aml-s812
 
         # Fix root partition label in boot config files
@@ -415,15 +440,11 @@ jobs:
         ROOT_LABEL=$(sudo e2label "${LOOP}p2" 2>/dev/null || echo "unknown")
         echo "Root partition (${LOOP}p2) label: ${ROOT_LABEL}"
         if [ "$ROOT_LABEL" != "armbi_root" ] && [ "$ROOT_LABEL" != "ROOTFS" ]; then
-          echo "WARNING: unexpected root label '${ROOT_LABEL}' — setting it to armbi_root"
+          echo "Setting root label to armbi_root"
           sudo e2label "${LOOP}p2" armbi_root
         fi
 
-        # -----------------------------------------------------------------
-        # NEW: Install mtd-utils into the rootfs so you have the tools to
-        # flash NAND (flash_erase, nandwrite, ubiformat, nanddump) when you
-        # boot this image from SD/USB.
-        # -----------------------------------------------------------------
+        # Install mtd-utils into rootfs
         echo "Installing mtd-utils into rootfs via chroot ..."
         sudo chroot /tmp/mnt_root /bin/bash -c "
           apt-get update -qq && \
@@ -431,119 +452,116 @@ jobs:
           apt-get clean
         " || echo "WARNING: mtd-utils install failed — install manually after boot"
 
-        # -----------------------------------------------------------------
-        # NEW: Drop a NAND flash helper script into /root/ on the image.
-        # After booting from SD/USB, run:  sudo bash /root/flash-to-nand.sh
-        # It will walk you through erasing and writing u-boot, kernel, and
-        # rootfs to the correct NAND partitions based on the printenv layout.
-        # -----------------------------------------------------------------
+        # Install flash-to-nand.sh helper script
+        # Partition numbers based on real boot log layout:
+        #   mtd0 = u-boot    (0x0000000, 16 MiB)
+        #   mtd1 = logo      (0x1000000, 32 MiB)
+        #   mtd2 = recovery  (0x3000000, 32 MiB)
+        #   mtd3 = misc      (0x5000000, 32 MiB)
+        #   mtd4 = boot      (0x7000000, 32 MiB)  <- kernel here
+        #   mtd5 = system    (0x9000000,  1 GiB)  <- rootfs here
+        #   mtd6 = cache     (0x49000000, 512 MiB)
+        #   mtd7 = data      (0x69000000, rest)
         sudo tee /tmp/mnt_root/root/flash-to-nand.sh > /dev/null << 'FLASHSCRIPT'
         #!/usr/bin/env bash
-        # =============================================================================
-        # flash-to-nand.sh  —  Flash u-boot, kernel, and rootfs to M8S NAND
-        #
-        # Run this script after booting the Armbian image from SD/USB.
-        # Make sure the files you want to flash are accessible (e.g. on a USB stick
-        # mounted at /mnt/usb or copied to /root/).
-        #
-        # NAND partition layout from U-Boot printenv:
-        #   mtd0  0x0000000  +0x100000   u-boot          (1 MiB)
-        #   mtd1  0x0400000  +0x010000   u-boot-env      (64 KiB)  [DO NOT TOUCH]
-        #   mtd2  0x1000000  +0x400000   boot / kernel   (4 MiB)
-        #   mtd3  0x1400000  +0x8000000  system / rootfs (128 MiB)
-        # =============================================================================
-        
         set -e
         
         RED='\033[0;31m'; YEL='\033[1;33m'; GRN='\033[0;32m'; NC='\033[0m'
-        
         info()  { echo -e "${GRN}[INFO]${NC}  $*"; }
         warn()  { echo -e "${YEL}[WARN]${NC}  $*"; }
         error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
         
-        # ---------- sanity checks ----------
-        [ "$(id -u)" -eq 0 ] || error "Run as root:  sudo bash $0"
-        command -v flash_erase  >/dev/null || error "flash_erase not found. Run: apt install mtd-utils"
-        command -v nandwrite    >/dev/null || error "nandwrite not found. Run:  apt install mtd-utils"
-        command -v ubiformat    >/dev/null || error "ubiformat not found. Run:  apt install mtd-utils"
+        [ "$(id -u)" -eq 0 ] || error "Run as root: sudo bash $0"
+        command -v flash_erase >/dev/null || error "flash_erase not found. Run: apt install mtd-utils"
+        command -v nandwrite   >/dev/null || error "nandwrite not found.   Run: apt install mtd-utils"
+        command -v ubiformat   >/dev/null || error "ubiformat not found.   Run: apt install mtd-utils"
         
-        # ---------- check MTD devices exist ----------
-        info "Detected MTD devices:"
-        cat /proc/mtd || error "/proc/mtd not found — is the NAND driver loaded? Check dmesg."
-        echo
+        echo ""
+        info "=== Detected MTD devices ==="
+        cat /proc/mtd 2>/dev/null || error "/proc/mtd missing — NAND driver not loaded. Check dmesg."
+        echo ""
         
-        # ---------- helper: confirm before destructive action ----------
+        # Confirm the partition names match what we expect
+        if ! grep -q '"boot"' /proc/mtd || ! grep -q '"system"' /proc/mtd; then
+          warn "Expected 'boot' and 'system' partitions not found in /proc/mtd"
+          warn "The DTS partition table may be wrong. Check dmesg | grep -i nand"
+          warn "Continuing anyway — verify mtd numbers manually before proceeding."
+        fi
+        
+        # Resolve mtd numbers by partition name so this script is
+        # resilient if partition order ever changes
+        MTD_BOOT=$(grep '"boot"'   /proc/mtd | cut -d: -f1)   # e.g. mtd4
+        MTD_SYS=$(grep '"system"' /proc/mtd | cut -d: -f1)    # e.g. mtd5
+        
+        info "Kernel partition : /dev/${MTD_BOOT}"
+        info "Rootfs partition : /dev/${MTD_SYS}"
+        echo ""
+        
         confirm() {
           read -r -p "$1 [y/N] " ans
           [[ "$ans" =~ ^[Yy]$ ]] || { warn "Skipped."; return 1; }
         }
         
-        # =============================================================================
-        # 1. Flash U-Boot  (mtd0 — DANGEROUS: bad write = no boot)
-        # =============================================================================
+        # Step 1: Back up current NAND partitions before touching anything
+        echo ""
         warn "=========================================================="
-        warn " Flashing U-Boot is DANGEROUS."
-        warn " If you write a bad image the board will NOT boot at all."
-        warn " Skip this unless you have a USB Amlogic burn-mode cable"
-        warn " for recovery, or you are confident in your image."
+        warn " STEP 1: BACKUP (strongly recommended)"
         warn "=========================================================="
-        echo
-        if confirm "Do you want to flash U-Boot to /dev/mtd0?"; then
-          read -r -p "Path to u-boot binary: " UBOOT_BIN
-          [ -f "$UBOOT_BIN" ] || error "File not found: $UBOOT_BIN"
-          info "Erasing /dev/mtd0 ..."
-          flash_erase /dev/mtd0 0 0
-          info "Writing $UBOOT_BIN to /dev/mtd0 ..."
-          nandwrite -p /dev/mtd0 "$UBOOT_BIN"
-          info "U-Boot flashed successfully."
+        if confirm "Back up current boot and system partitions to /root/?"; then
+          info "Backing up /dev/${MTD_BOOT} → /root/boot-nand.bak ..."
+          nanddump -f /root/boot-nand.bak /dev/${MTD_BOOT}
+          info "Backing up /dev/${MTD_SYS} → /root/system-nand.bak ..."
+          nanddump -f /root/system-nand.bak /dev/${MTD_SYS}
+          info "Backup complete. Copy these to USB before proceeding!"
+          confirm "Backups done — continue to flashing?" || exit 0
         fi
         
-        # =============================================================================
-        # 2. Flash Kernel (uImage)  →  mtd2 = boot partition
-        # =============================================================================
-        echo
-        if confirm "Flash kernel (uImage) to /dev/mtd2 (boot partition)?"; then
-          read -r -p "Path to uImage: " UIMAGE
+        # Step 2: Flash kernel to boot partition (mtd4)
+        echo ""
+        warn "=========================================================="
+        warn " STEP 2: FLASH KERNEL → /dev/${MTD_BOOT}"
+        warn "=========================================================="
+        if confirm "Flash kernel (uImage) to /dev/${MTD_BOOT}?"; then
+          read -r -p "Path to uImage [/boot/uImage]: " UIMAGE
+          UIMAGE="${UIMAGE:-/boot/uImage}"
           [ -f "$UIMAGE" ] || error "File not found: $UIMAGE"
-          info "Erasing /dev/mtd2 ..."
-          flash_erase /dev/mtd2 0 0
-          info "Writing $UIMAGE to /dev/mtd2 ..."
-          nandwrite -p /dev/mtd2 "$UIMAGE"
-          info "Kernel flashed successfully."
+          info "Erasing /dev/${MTD_BOOT} ..."
+          flash_erase /dev/${MTD_BOOT} 0 0
+          info "Writing $UIMAGE ..."
+          nandwrite -p /dev/${MTD_BOOT} "$UIMAGE"
+          info "Kernel flashed OK."
         fi
         
-        # =============================================================================
-        # 3. Flash rootfs  →  mtd3 = system partition  (UBIFS)
-        # =============================================================================
-        echo
-        warn "Rootfs must be a pre-built UBI image (.ubi)."
-        warn "Build one with:  ubinize -o rootfs.ubi -m 2048 -p 256KiB ubinize.cfg"
-        echo
-        if confirm "Flash rootfs (.ubi image) to /dev/mtd3 (system partition)?"; then
+        # Step 3: Flash rootfs to system partition (mtd5)
+        echo ""
+        warn "=========================================================="
+        warn " STEP 3: FLASH ROOTFS → /dev/${MTD_SYS}"
+        warn " Rootfs must be a UBI image (.ubi)"
+        warn " NAND geometry: page=8192 block=1048576 (Samsung SDTNRGAMA-008G)"
+        warn " Build with: ubinize -o rootfs.ubi -m 8192 -p 1048576 ubinize.cfg"
+        warn "=========================================================="
+        if confirm "Flash rootfs (.ubi) to /dev/${MTD_SYS}?"; then
           read -r -p "Path to rootfs.ubi: " ROOTFS_UBI
           [ -f "$ROOTFS_UBI" ] || error "File not found: $ROOTFS_UBI"
-          info "Erasing /dev/mtd3 ..."
-          flash_erase /dev/mtd3 0 0
-          info "Running ubiformat on /dev/mtd3 ..."
-          ubiformat /dev/mtd3 -f "$ROOTFS_UBI"
-          info "Rootfs flashed successfully."
+          info "Erasing /dev/${MTD_SYS} ..."
+          flash_erase /dev/${MTD_SYS} 0 0
+          info "Running ubiformat on /dev/${MTD_SYS} ..."
+          ubiformat /dev/${MTD_SYS} -f "$ROOTFS_UBI" -m 8192 -p 1048576
+          info "Rootfs flashed OK."
         fi
         
-        # =============================================================================
-        # 4. Set U-Boot environment for NAND boot
-        # =============================================================================
-        echo
+        # Step 4: Reminder for U-Boot env
+        echo ""
         info "=========================================================="
-        info " After flashing, set U-Boot boot args via serial console:"
+        info " STEP 4: UPDATE U-Boot env via serial console"
         info ""
-        info "   setenv bootargs 'root=ubi0:rootfs rootfstype=ubifs"
-        info "       ubi.mtd=3 console=ttyAML0,115200 rw'"
-        info "   setenv bootcmd 'nand read 0x1000000 0x1000000 0x400000; bootm 0x1000000'"
-        info "   saveenv"
-        info "   reset"
+        info " setenv bootargs 'root=ubi0:rootfs rootfstype=ubifs"
+        info "     ubi.mtd=5 console=ttyAML0,115200 rw'"
+        info " setenv bootcmd 'imgread kernel boot \${loadaddr}; bootm'"
+        info " saveenv"
+        info " reset"
         info "=========================================================="
-        
-        info "All done. Check dmesg for any errors."
+        info "All done."
         FLASHSCRIPT
 
         sudo chmod +x /tmp/mnt_root/root/flash-to-nand.sh
@@ -552,7 +570,7 @@ jobs:
         sudo umount /tmp/mnt_boot
         sudo umount /tmp/mnt_root
         sudo losetup -d "$LOOP"
-        echo "Kernel + DTB + modules installed successfully."
+        echo "All files installed into image successfully."
 
     - name: Compress image with xz
       run: |
@@ -560,7 +578,7 @@ jobs:
         sudo xz -T0 -v "$IMAGE"
         ls -lh armbian-build/output/images/
 
-    - name: Upload image as artifact
+    - name: Upload full image as artifact
       uses: actions/upload-artifact@v7
       with:
         name: armbian-trixie-linux620-m8s-build${{ github.run_number }}
