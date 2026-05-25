@@ -337,7 +337,36 @@ jobs:
             sys.exit(1)
         
         target.write_text(text)
-        print(f"\nTotal: {applied}/2 patches applied.")
+        # ------------------------------------------------------------------
+        # Fix 3: Force in-memory BBT — never write BBT to flash.
+        # ------------------------------------------------------------------
+        old3 = (
+            '\tif (nand->bbt_options & NAND_BBT_USE_FLASH)\n'
+            '\t\tnand->bbt_options |= NAND_BBT_NO_OOB;\n'
+        )
+        new3 = (
+            '\t/* Force in-memory BBT unconditionally.\n'
+            '\t * Vendor OOB layout differs from mainline so bad block scan\n'
+            '\t * produces false positives, leaving no space to write BBT.\n'
+            '\t */\n'
+            '\tnand->bbt_options &= ~NAND_BBT_USE_FLASH;\n'
+            '\tif (nand->bbt_options & NAND_BBT_USE_FLASH)\n'
+            '\t\tnand->bbt_options |= NAND_BBT_NO_OOB;\n'
+        )
+        if 'Force in-memory BBT' in text:
+            print("Fix 3 skipped: already applied")
+            applied += 1
+        elif old3 in text:
+            text = text.replace(old3, new3)
+            print("Fix 3 applied: forced in-memory BBT")
+            applied += 1
+        else:
+            print("ERROR: Fix 3 failed — BBT block not found")
+            for line in text.split('\n'):
+                if 'bbt_options' in line:
+                    print(f"  {repr(line)}")
+            sys.exit(1)
+        print(f"\nTotal: {applied}/3 patches applied.")
         PYEOF
 
         echo "=== Verifying Fix 1: ID table ==="
