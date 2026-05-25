@@ -32,7 +32,6 @@ jobs:
           "$AGENT_TOOLSDIRECTORY"
         sudo apt-get clean
         df -h
-
     - name: Install build dependencies
       run: |
         sudo apt-get update
@@ -50,7 +49,6 @@ jobs:
           cpio \
           ccache \
           python3
-
     - name: Update Debian archive keyring (host)
       run: |
         wget -q -O /tmp/keyring.deb \
@@ -58,7 +56,6 @@ jobs:
         sudo dpkg -i /tmp/keyring.deb
         rm /tmp/keyring.deb
         sudo apt-get update -qq
-
     - name: Resolve remote HEAD SHAs for cache keys
       id: shas
       run: |
@@ -66,12 +63,10 @@ jobs:
           "refs/heads/${{ env.ARMBIAN_BRANCH }}" | cut -f1)
         KERNEL_SHA=$(git ls-remote "${{ env.KERNEL_REPO }}" \
           "refs/heads/${{ env.KERNEL_BRANCH }}" | cut -f1)
-
         echo "armbian_sha=${ARMBIAN_SHA}" >> "$GITHUB_OUTPUT"
         echo "kernel_sha=${KERNEL_SHA}"   >> "$GITHUB_OUTPUT"
         echo "Armbian branch HEAD: ${ARMBIAN_SHA}"
         echo "Kernel  branch HEAD: ${KERNEL_SHA}"
-
     - name: Clone SLAzurin Armbian build fork
       run: |
         git clone --depth=1 \
@@ -80,7 +75,6 @@ jobs:
           armbian-build
         cd armbian-build
         mv userpatches.s8xx userpatches
-
     - name: Cache Armbian rootfs
       uses: actions/cache@v5
       with:
@@ -89,7 +83,6 @@ jobs:
         restore-keys: |
           armbian-rootfs-${{ steps.shas.outputs.armbian_sha }}-
           armbian-rootfs-
-
     - name: Cache Armbian apt packages
       uses: actions/cache@v5
       with:
@@ -98,12 +91,10 @@ jobs:
         restore-keys: |
           armbian-aptcache-trixie-
           armbian-aptcache-
-
     - name: Fix cache directory permissions
       run: |
         sudo mkdir -p armbian-build/cache/rootfs armbian-build/cache/aptcache
         sudo chown -R root:root armbian-build/cache/
-
     - name: Remove foreign x86-64 binary from BSP source
       run: |
         cd armbian-build
@@ -113,17 +104,14 @@ jobs:
           exit 1
         fi
         echo "BSP source cleaned."
-
     - name: Patch aml-s812.conf family_tweaks for minimal Trixie build
       run: |
         python3 - << 'PYEOF'
         import sys, shutil, pathlib
-
         target = pathlib.Path("armbian-build/config/sources/families/aml-s812.conf")
         shutil.copy(target, str(target) + ".bak")
         text = target.read_text()
         applied = 0
-
         old1 = "\tcp $SRC/packages/bsp/mpv/mpv_mainline.conf $SDCARD/etc/mpv/mpv.conf"
         new1 = "\t[ -d \"$SDCARD/etc/mpv\" ] && cp $SRC/packages/bsp/mpv/mpv_mainline.conf $SDCARD/etc/mpv/mpv.conf || true"
         if old1 in text:
@@ -132,7 +120,6 @@ jobs:
             applied += 1
         else:
             print("WARNING Fix 1: mpv line not found (already patched?)")
-
         old2 = ">> $SDCARD/etc/X11/xorg.conf.d/01-armbian-defaults.conf"
         new2 = ">> $SDCARD/etc/X11/xorg.conf.d/01-armbian-defaults.conf || true"
         old2b = "\techo 'Section \"Device\"'"
@@ -144,7 +131,6 @@ jobs:
             applied += 1
         else:
             print("WARNING Fix 2: xorg lines not found (already patched?)")
-
         old3 = "\tmkimage -A arm -O linux -C none -T kernel -a 0x00208000 -e 0x00208000 -n linux-next -d $SDCARD/boot/zImage $SDCARD/boot/uImage"
         new3 = "\t# uImage from zImage skipped: real uImage installed from xdarklight kernel build"
         if old3 in text:
@@ -153,7 +139,6 @@ jobs:
             applied += 1
         else:
             print("WARNING Fix 3: mkimage zImage line not found (already patched?)")
-
         target.write_text(text)
         print(f"aml-s812.conf: {applied}/3 patches applied.")
         if applied < 3:
@@ -161,7 +146,6 @@ jobs:
             print("The upstream file may have changed. Build may still succeed if")
             print("the lines were already patched in a previous cache-hit run.")
         PYEOF
-
     - name: Patch rootfs-create.sh for SHA-1 acceptance (inside chroot)
       run: |
         python3 - << 'PYEOF'
@@ -194,7 +178,6 @@ jobs:
         target.write_text(text)
         print("rootfs-create.sh patched successfully.")
         PYEOF
-
     - name: Build Armbian base image
       run: |
         cd armbian-build
@@ -211,7 +194,6 @@ jobs:
             COMPRESS_OUTPUTIMAGE=no \
             USE_TORRENT=no \
             KERNEL_GIT=shallow
-
     - name: Upload Armbian build logs
       if: always()
       uses: actions/upload-artifact@v7
@@ -235,19 +217,16 @@ jobs:
           --branch "${{ env.KERNEL_BRANCH }}" \
           "${{ env.KERNEL_REPO }}" \
           linux-src
-
     - name: Inject custom DTS files into kernel source
       run: |
         KERNEL_DTS_DIR="linux-src/arch/arm/boot/dts/amlogic"
         REPO_DTS="my-repo/${{ env.REPO_DTS_DIR }}"
-
         echo "=== DTS files found in your repo ==="
         ls -lh "$REPO_DTS/" 2>/dev/null || {
           echo "ERROR: Directory '$REPO_DTS' not found."
           echo "Check that REPO_DTS_DIR='${{ env.REPO_DTS_DIR }}' matches your repo layout."
           exit 1
         }
-
         # Inject each file if it exists in your repo
         for f in meson8m2-m8s.dts meson8m2.dtsi meson8.dtsi; do
           if [ -f "$REPO_DTS/$f" ]; then
@@ -257,7 +236,6 @@ jobs:
             echo "Skipped (not in repo, using upstream): $f"
           fi
         done
-
         echo ""
         echo "=== Verifying &nfc status in injected DTS ==="
         if grep -A5 "^&nfc" "$KERNEL_DTS_DIR/meson8m2-m8s.dts" | grep -q "status.*okay"; then
@@ -267,18 +245,16 @@ jobs:
           echo "--- Current &nfc block ---"
           grep -A5 "^&nfc" "$KERNEL_DTS_DIR/meson8m2-m8s.dts" || true
         fi
-
         echo ""
         echo "=== Verifying partition table in injected DTS ==="
         grep -E "label|reg = " "$KERNEL_DTS_DIR/meson8m2-m8s.dts" | grep -A1 "label" || true
-
     - name: Patch meson_nand driver for Meson8 support and large-page NAND
       run: |
         DRIVER="linux-src/drivers/mtd/nand/raw/meson_nand.c"
-    
+
         echo "=== Checking driver exists ==="
         [ -f "$DRIVER" ] || { echo "ERROR: $DRIVER not found"; exit 1; }
-    
+
         python3 - << 'PYEOF'
         import pathlib, sys, re
         
@@ -288,118 +264,83 @@ jobs:
         
         # ------------------------------------------------------------------
         # Fix 1: Add "amlogic,meson8-nfc" to the compatible ID table.
+        # Use regex so whitespace differences don't matter.
         # ------------------------------------------------------------------
-        old1 = """\tstatic const struct of_device_id meson_nfc_id_table[] = {
-        \t{
-        \t\t.compatible = "amlogic,meson-gxl-nfc",
-        \t\t.data = &meson_gxl_data,
-        \t}, {
-        \t\t.compatible = "amlogic,meson-axg-nfc",
-        \t\t.data = &meson_axg_data,
-        \t},
-        \t{}
-        };"""
+        pattern1 = re.compile(
+            r'(static const struct of_device_id meson_nfc_id_table\[\] = \{)',
+            re.MULTILINE
+        )
         
-        new1 = """\tstatic const struct of_device_id meson_nfc_id_table[] = {
-        \t{
-        \t\t.compatible = "amlogic,meson8-nfc",
-        \t\t.data = &meson_gxl_data,
-        \t}, {
-        \t\t.compatible = "amlogic,meson-gxl-nfc",
-        \t\t.data = &meson_gxl_data,
-        \t}, {
-        \t\t.compatible = "amlogic,meson-axg-nfc",
-        \t\t.data = &meson_axg_data,
-        \t},
-        \t{}
-        };"""
+        insert = (
+            '\t{\n'
+            '\t\t.compatible = "amlogic,meson8-nfc",\n'
+            '\t\t.data = &meson_gxl_data,\n'
+            '\t}, '
+        )
         
-        # Strip leading tab from heredoc (Python indentation artifact)
-        old1 = old1.replace('\t', '', 1) if old1.startswith('\t') else old1
-        old1 = """static const struct of_device_id meson_nfc_id_table[] = {
-        \t{
-        \t\t.compatible = "amlogic,meson-gxl-nfc",
-        \t\t.data = &meson_gxl_data,
-        \t}, {
-        \t\t.compatible = "amlogic,meson-axg-nfc",
-        \t\t.data = &meson_axg_data,
-        \t},
-        \t{}
-        };"""
-        
-        new1 = """static const struct of_device_id meson_nfc_id_table[] = {
-        \t{
-        \t\t.compatible = "amlogic,meson8-nfc",
-        \t\t.data = &meson_gxl_data,
-        \t}, {
-        \t\t.compatible = "amlogic,meson-gxl-nfc",
-        \t\t.data = &meson_gxl_data,
-        \t}, {
-        \t\t.compatible = "amlogic,meson-axg-nfc",
-        \t\t.data = &meson_axg_data,
-        \t},
-        \t{}
-        };"""
-        
-        if old1 in text:
-            text = text.replace(old1, new1)
+        if 'amlogic,meson8-nfc' in text:
+            print("Fix 1 skipped: amlogic,meson8-nfc already present")
+            applied += 1
+        elif pattern1.search(text):
+            text = pattern1.sub(r'\1\n' + insert, text)
             print("Fix 1 applied: amlogic,meson8-nfc added to ID table")
             applied += 1
         else:
-            print("ERROR: Fix 1 failed — could not find meson_nfc_id_table")
-            print("Searching for fragments:")
-            for line in text.split('\n'):
-                if 'meson_nfc_id_table' in line or 'meson-gxl-nfc' in line:
-                    print(f"  {repr(line)}")
+            print("ERROR: Fix 1 failed — meson_nfc_id_table not found")
             sys.exit(1)
         
         # ------------------------------------------------------------------
-        # Fix 2: Downgrade the raw mode size check from hard error to warning.
+        # Fix 2: Downgrade raw mode size check from hard error to warning.
+        # Use regex to match regardless of exact whitespace/format.
         # ------------------------------------------------------------------
-        old2 = """\traw_writesize = mtd->writesize + mtd->oobsize;
-        \tif (raw_writesize > NFC_CMD_RAW_LEN) {
-        \t\tdev_err(nfc->dev, "too big write size in raw mode: %d > %ld\\n",
-        \t\t\traw_writesize, NFC_CMD_RAW_LEN);
-        \t\treturn -EINVAL;
-        \t}"""
+        pattern2 = re.compile(
+            r'(raw_writesize = mtd->writesize \+ mtd->oobsize;\s*\n)'
+            r'\s*if \(raw_writesize > NFC_CMD_RAW_LEN\) \{\s*\n'
+            r'\s*dev_err\([^;]+;\s*\n'
+            r'\s*return -EINVAL;\s*\n'
+            r'\s*\}',
+            re.MULTILINE
+        )
         
-        new2 = """\traw_writesize = mtd->writesize + mtd->oobsize;
-        \tif (raw_writesize > NFC_CMD_RAW_LEN) {
-        \t\t/*
-        \t\t * Large-page chip (e.g. SanDisk SDTNRGAMA, page=16384 +
-        \t\t * oob=1280 = 17664) exceeds the 14-bit NFC DMA length
-        \t\t * register limit (NFC_CMD_RAW_LEN = 0x3FFF = 16383).
-        \t\t * Raw mode is not supported for this chip, but ECC mode
-        \t\t * operates on 1024-byte steps so it works correctly.
-        \t\t * Warn and continue instead of aborting probe.
-        \t\t */
-        \t\tdev_warn(nfc->dev,
-        \t\t\t "raw mode unsupported for this chip (%d > %ld bytes); ECC mode only\\n",
-        \t\t\t raw_writesize, NFC_CMD_RAW_LEN);
-        \t}"""
+        new2 = (
+            '\traw_writesize = mtd->writesize + mtd->oobsize;\n'
+            '\tif (raw_writesize > NFC_CMD_RAW_LEN) {\n'
+            '\t\t/*\n'
+            '\t\t * Large-page chip (e.g. SanDisk SDTNRGAMA page=16384 +\n'
+            '\t\t * oob=1280 = 17664) exceeds the 14-bit NFC DMA length\n'
+            '\t\t * register limit (0x3FFF = 16383). Raw mode is not\n'
+            '\t\t * supported but ECC mode (1024-byte steps) works fine.\n'
+            '\t\t */\n'
+            '\t\tdev_warn(nfc->dev,\n'
+            '\t\t\t "raw mode unsupported for this chip (%d > %ld); ECC mode only\\n",\n'
+            '\t\t\t raw_writesize, NFC_CMD_RAW_LEN);\n'
+            '\t}'
+        )
         
-        if old2 in text:
-            text = text.replace(old2, new2)
+        if 'ECC mode only' in text:
+            print("Fix 2 skipped: raw mode patch already applied")
+            applied += 1
+        elif pattern2.search(text):
+            text = pattern2.sub(new2, text)
             print("Fix 2 applied: raw mode check downgraded to warning")
             applied += 1
         else:
-            print("ERROR: Fix 2 failed — could not find raw_writesize check")
-            print("Searching for fragments:")
+            print("ERROR: Fix 2 failed — raw_writesize block not found")
+            print("Fragments found:")
             for line in text.split('\n'):
                 if 'raw_writesize' in line or 'too big' in line:
                     print(f"  {repr(line)}")
             sys.exit(1)
         
         target.write_text(text)
-        print(f"\nTotal: {applied}/2 patches applied successfully.")
+        print(f"\nTotal: {applied}/2 patches applied.")
         PYEOF
-    
-        echo "=== Verifying patches ==="
-        echo "--- ID table (should include meson8-nfc) ---"
-        grep -A12 "meson_nfc_id_table" "$DRIVER" | head -15
-    
-        echo "--- raw_writesize block (should say 'dev_warn') ---"
-        grep -A10 "raw_writesize = " "$DRIVER"
+
+        echo "=== Verifying Fix 1: ID table ==="
+        grep -A14 "meson_nfc_id_table\[\]" "$DRIVER" | head -16
+
+        echo "=== Verifying Fix 2: raw_writesize block ==="
+        grep -A12 "raw_writesize = " "$DRIVER"
 
     - name: Cache kernel ccache objects
       uses: actions/cache@v5
@@ -408,24 +349,20 @@ jobs:
         key: kernel-ccache-${{ steps.shas.outputs.kernel_sha }}
         restore-keys: |
           kernel-ccache-
-
     - name: Configure ccache
       run: |
         ccache --max-size=5G
         ccache --zero-stats
         echo "CC=ccache arm-linux-gnueabihf-gcc"  >> "$GITHUB_ENV"
         echo "CXX=ccache arm-linux-gnueabihf-g++" >> "$GITHUB_ENV"
-
     - name: Seed kernel config and enable NAND/MTD/UBI
       run: |
         cp my-repo/config_files/config-aml-s812 linux-src/.config
         cd linux-src
-
         # Existing patch
         sed -i \
           's@# CONFIG_POSIX_MQUEUE is not set@CONFIG_POSIX_MQUEUE=y\nCONFIG_POSIX_MQUEUE_SYSCTL=y@g' \
           .config
-
         # Helper: safely enable a kernel config option regardless of current state
         patch_kconfig() {
           local key="$1"
@@ -441,7 +378,6 @@ jobs:
             echo "  appended: ${key}=${val}"
           fi
         }
-
         echo "--- Enabling NAND / MTD / UBI kernel options ---"
         patch_kconfig CONFIG_MTD                     y
         patch_kconfig CONFIG_MTD_BLOCK               y
@@ -455,10 +391,8 @@ jobs:
         patch_kconfig CONFIG_MTD_UBI_WL_THRESHOLD    4096
         patch_kconfig CONFIG_MTD_UBI_BEB_LIMIT       20
         patch_kconfig CONFIG_UBIFS_FS                y
-
         echo "--- Resolving config dependencies ---"
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
-
         echo "--- Verifying critical options ---"
         MISSING=0
         for key in CONFIG_MTD CONFIG_MTD_NAND_CORE CONFIG_MTD_NAND_MESON \
@@ -472,7 +406,6 @@ jobs:
         else
           echo "All critical NAND options confirmed set."
         fi
-
     - name: Build kernel uImage, DTB, and modules
       run: |
         cd linux-src
@@ -484,7 +417,6 @@ jobs:
           LOCALVERSION="-aml-s812" \
           LOADADDR=0x00208000 \
           uImage dtbs modules
-
         echo ""
         echo "=== Verifying meson8m2-m8s.dtb was built ==="
         if [ -f arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb ]; then
@@ -496,7 +428,6 @@ jobs:
           find arch/arm/boot/dts/amlogic/ -name "meson8*" 2>/dev/null || true
           exit 1
         fi
-
     - name: Show ccache statistics
       run: ccache --show-stats
 
@@ -513,43 +444,33 @@ jobs:
         IMAGE=$(ls armbian-build/output/images/*.img | head -1)
         echo "Target image: $IMAGE"
         mkdir -p /tmp/mnt_boot /tmp/mnt_root
-
         LOOP=$(sudo losetup --find --show --partscan "$IMAGE")
         echo "Loop device: $LOOP"
-
         sudo mount "${LOOP}p1" /tmp/mnt_boot
         sudo mount "${LOOP}p2" /tmp/mnt_root
-
         echo "=== Current boot partition contents ==="
         ls -lh /tmp/mnt_boot/
-
         # Back up old uImage if present
         [ -f /tmp/mnt_boot/uImage ] && \
           sudo cp /tmp/mnt_boot/uImage /tmp/mnt_boot/uImage.bak
-
         # Install uImage
         sudo cp linux-src/arch/arm/boot/uImage /tmp/mnt_boot/uImage
         echo "uImage installed."
-
         # Install DTB
         sudo cp \
           linux-src/arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb \
           /tmp/mnt_boot/meson8m2-m8s.dtb
         echo "DTB installed: meson8m2-m8s.dtb"
-
         echo "=== Boot partition after install ==="
         ls -lh /tmp/mnt_boot/
-
         # Install kernel modules
         sudo make -C linux-src \
           ARCH=arm \
           CROSS_COMPILE=arm-linux-gnueabihf- \
           INSTALL_MOD_PATH=/tmp/mnt_root \
           modules_install
-
         # Save finalised .config to /boot
         sudo cp linux-src/.config /tmp/mnt_boot/config-6.20.0-aml-s812
-
         # Fix root partition label in boot config files
         for cfg in uEnv.txt boot.ini; do
           if sudo test -f "/tmp/mnt_boot/$cfg"; then
@@ -564,7 +485,6 @@ jobs:
             /tmp/mnt_boot/armbianEnv.txt
           echo "armbianEnv.txt rootdev fixed."
         fi
-
         # Verify root partition label
         ROOT_LABEL=$(sudo e2label "${LOOP}p2" 2>/dev/null || echo "unknown")
         echo "Root partition (${LOOP}p2) label: ${ROOT_LABEL}"
@@ -572,7 +492,6 @@ jobs:
           echo "Setting root label to armbi_root"
           sudo e2label "${LOOP}p2" armbi_root
         fi
-
         # Install mtd-utils into rootfs
         echo "Installing mtd-utils into rootfs via chroot ..."
         sudo chroot /tmp/mnt_root /bin/bash -c "
@@ -580,7 +499,6 @@ jobs:
           apt-get install -y --no-install-recommends mtd-utils && \
           apt-get clean
         " || echo "WARNING: mtd-utils install failed — install manually after boot"
-
         # Install flash-to-nand.sh helper script
         # Partition numbers based on real boot log layout:
         #   mtd0 = u-boot    (0x0000000, 16 MiB)
@@ -692,21 +610,17 @@ jobs:
         info "=========================================================="
         info "All done."
         FLASHSCRIPT
-
         sudo chmod +x /tmp/mnt_root/root/flash-to-nand.sh
         echo "flash-to-nand.sh installed to /root/flash-to-nand.sh"
-
         sudo umount /tmp/mnt_boot
         sudo umount /tmp/mnt_root
         sudo losetup -d "$LOOP"
         echo "All files installed into image successfully."
-
     - name: Compress image with xz
       run: |
         IMAGE=$(ls armbian-build/output/images/*.img | head -1)
         sudo xz -T0 -v "$IMAGE"
         ls -lh armbian-build/output/images/
-
     - name: Upload full image as artifact
       uses: actions/upload-artifact@v7
       with:
