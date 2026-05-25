@@ -73,6 +73,7 @@ jobs:
         echo "Armbian branch HEAD: ${ARMBIAN_SHA}"
         echo "Kernel  branch HEAD: ${KERNEL_SHA}"
     - name: Clone SLAzurin Armbian build fork
+      if: ${{ inputs.skip_armbian != true }}
       run: |
         git clone --depth=1 \
           --branch "${{ env.ARMBIAN_BRANCH }}" \
@@ -81,6 +82,7 @@ jobs:
         cd armbian-build
         mv userpatches.s8xx userpatches
     - name: Cache Armbian rootfs
+      if: ${{ inputs.skip_armbian != true }}
       uses: actions/cache@v5
       with:
         path: armbian-build/cache/rootfs
@@ -89,6 +91,7 @@ jobs:
           armbian-rootfs-${{ steps.shas.outputs.armbian_sha }}-
           armbian-rootfs-
     - name: Cache Armbian apt packages
+      if: ${{ inputs.skip_armbian != true }}
       uses: actions/cache@v5
       with:
         path: armbian-build/cache/aptcache
@@ -101,6 +104,7 @@ jobs:
         sudo mkdir -p armbian-build/cache/rootfs armbian-build/cache/aptcache
         sudo chown -R root:root armbian-build/cache/
     - name: Remove foreign x86-64 binary from BSP source
+      if: ${{ inputs.skip_armbian != true }}
       run: |
         cd armbian-build
         find packages/bsp/ -name 'ld-linux-x86-64.so.2' -delete
@@ -110,6 +114,7 @@ jobs:
         fi
         echo "BSP source cleaned."
     - name: Patch aml-s812.conf family_tweaks for minimal Trixie build
+      if: ${{ inputs.skip_armbian != true }}
       run: |
         python3 - << 'PYEOF'
         import sys, shutil, pathlib
@@ -152,6 +157,7 @@ jobs:
             print("the lines were already patched in a previous cache-hit run.")
         PYEOF
     - name: Patch rootfs-create.sh for SHA-1 acceptance (inside chroot)
+      if: ${{ inputs.skip_armbian != true }}
       run: |
         python3 - << 'PYEOF'
         import sys, shutil, pathlib
@@ -200,14 +206,6 @@ jobs:
             COMPRESS_OUTPUTIMAGE=no \
             USE_TORRENT=no \
             KERNEL_GIT=shallow
-    - name: Upload Armbian build logs
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: armbian-build-logs-${{ github.run_number }}
-        path: armbian-build/output/logs/
-        retention-days: 7
-        if-no-files-found: ignore
 
     - name: Cache kernel source tree
       id: kernel-src-cache
@@ -637,6 +635,7 @@ jobs:
         sudo losetup -d "$LOOP"
         echo "All files installed into image successfully."
     - name: Compress image with xz
+      if: ${{ inputs.skip_armbian != true }}
       run: |
         IMAGE=$(ls armbian-build/output/images/*.img | head -1)
         sudo xz -T0 -v "$IMAGE"
