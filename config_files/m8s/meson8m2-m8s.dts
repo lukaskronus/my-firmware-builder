@@ -285,9 +285,6 @@
     nand@0 {
         reg = <0>;
         nand-on-flash-bbt;
-        nand-ecc-mode = "hw";
-        nand-ecc-step-size = <1024>;
-        nand-ecc-strength = <8>;
 
 		partitions {
 			compatible = "fixed-partitions";

@@ -397,6 +397,8 @@ jobs:
         patch_kconfig CONFIG_MTD_UBI_WL_THRESHOLD    4096
         patch_kconfig CONFIG_MTD_UBI_BEB_LIMIT       20
         patch_kconfig CONFIG_UBIFS_FS                y
+        patch_kconfig CONFIG_MTD_NAND_ECC_SW_BCH     y
+        patch_kconfig CONFIG_MTD_NAND_ECC_MESON_GXL  y
         echo "--- Resolving config dependencies ---"
         make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
         echo "--- Verifying critical options ---"
