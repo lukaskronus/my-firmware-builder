@@ -272,6 +272,135 @@ jobs:
         echo "=== Verifying partition table in injected DTS ==="
         grep -E "label|reg = " "$KERNEL_DTS_DIR/meson8m2-m8s.dts" | grep -A1 "label" || true
 
+    - name: Patch meson_nand driver for Meson8 support and large-page NAND
+      run: |
+        DRIVER="linux-src/drivers/mtd/nand/raw/meson_nand.c"
+    
+        echo "=== Checking driver exists ==="
+        [ -f "$DRIVER" ] || { echo "ERROR: $DRIVER not found"; exit 1; }
+    
+        python3 - << 'PYEOF'
+        import pathlib, sys, re
+        
+        target = pathlib.Path("linux-src/drivers/mtd/nand/raw/meson_nand.c")
+        text = target.read_text()
+        applied = 0
+        
+        # ------------------------------------------------------------------
+        # Fix 1: Add "amlogic,meson8-nfc" to the compatible ID table.
+        # ------------------------------------------------------------------
+        old1 = """\tstatic const struct of_device_id meson_nfc_id_table[] = {
+        \t{
+        \t\t.compatible = "amlogic,meson-gxl-nfc",
+        \t\t.data = &meson_gxl_data,
+        \t}, {
+        \t\t.compatible = "amlogic,meson-axg-nfc",
+        \t\t.data = &meson_axg_data,
+        \t},
+        \t{}
+        };"""
+        
+        new1 = """\tstatic const struct of_device_id meson_nfc_id_table[] = {
+        \t{
+        \t\t.compatible = "amlogic,meson8-nfc",
+        \t\t.data = &meson_gxl_data,
+        \t}, {
+        \t\t.compatible = "amlogic,meson-gxl-nfc",
+        \t\t.data = &meson_gxl_data,
+        \t}, {
+        \t\t.compatible = "amlogic,meson-axg-nfc",
+        \t\t.data = &meson_axg_data,
+        \t},
+        \t{}
+        };"""
+        
+        # Strip leading tab from heredoc (Python indentation artifact)
+        old1 = old1.replace('\t', '', 1) if old1.startswith('\t') else old1
+        old1 = """static const struct of_device_id meson_nfc_id_table[] = {
+        \t{
+        \t\t.compatible = "amlogic,meson-gxl-nfc",
+        \t\t.data = &meson_gxl_data,
+        \t}, {
+        \t\t.compatible = "amlogic,meson-axg-nfc",
+        \t\t.data = &meson_axg_data,
+        \t},
+        \t{}
+        };"""
+        
+        new1 = """static const struct of_device_id meson_nfc_id_table[] = {
+        \t{
+        \t\t.compatible = "amlogic,meson8-nfc",
+        \t\t.data = &meson_gxl_data,
+        \t}, {
+        \t\t.compatible = "amlogic,meson-gxl-nfc",
+        \t\t.data = &meson_gxl_data,
+        \t}, {
+        \t\t.compatible = "amlogic,meson-axg-nfc",
+        \t\t.data = &meson_axg_data,
+        \t},
+        \t{}
+        };"""
+        
+        if old1 in text:
+            text = text.replace(old1, new1)
+            print("Fix 1 applied: amlogic,meson8-nfc added to ID table")
+            applied += 1
+        else:
+            print("ERROR: Fix 1 failed — could not find meson_nfc_id_table")
+            print("Searching for fragments:")
+            for line in text.split('\n'):
+                if 'meson_nfc_id_table' in line or 'meson-gxl-nfc' in line:
+                    print(f"  {repr(line)}")
+            sys.exit(1)
+        
+        # ------------------------------------------------------------------
+        # Fix 2: Downgrade the raw mode size check from hard error to warning.
+        # ------------------------------------------------------------------
+        old2 = """\traw_writesize = mtd->writesize + mtd->oobsize;
+        \tif (raw_writesize > NFC_CMD_RAW_LEN) {
+        \t\tdev_err(nfc->dev, "too big write size in raw mode: %d > %ld\\n",
+        \t\t\traw_writesize, NFC_CMD_RAW_LEN);
+        \t\treturn -EINVAL;
+        \t}"""
+        
+        new2 = """\traw_writesize = mtd->writesize + mtd->oobsize;
+        \tif (raw_writesize > NFC_CMD_RAW_LEN) {
+        \t\t/*
+        \t\t * Large-page chip (e.g. SanDisk SDTNRGAMA, page=16384 +
+        \t\t * oob=1280 = 17664) exceeds the 14-bit NFC DMA length
+        \t\t * register limit (NFC_CMD_RAW_LEN = 0x3FFF = 16383).
+        \t\t * Raw mode is not supported for this chip, but ECC mode
+        \t\t * operates on 1024-byte steps so it works correctly.
+        \t\t * Warn and continue instead of aborting probe.
+        \t\t */
+        \t\tdev_warn(nfc->dev,
+        \t\t\t "raw mode unsupported for this chip (%d > %ld bytes); ECC mode only\\n",
+        \t\t\t raw_writesize, NFC_CMD_RAW_LEN);
+        \t}"""
+        
+        if old2 in text:
+            text = text.replace(old2, new2)
+            print("Fix 2 applied: raw mode check downgraded to warning")
+            applied += 1
+        else:
+            print("ERROR: Fix 2 failed — could not find raw_writesize check")
+            print("Searching for fragments:")
+            for line in text.split('\n'):
+                if 'raw_writesize' in line or 'too big' in line:
+                    print(f"  {repr(line)}")
+            sys.exit(1)
+        
+        target.write_text(text)
+        print(f"\nTotal: {applied}/2 patches applied successfully.")
+        PYEOF
+    
+        echo "=== Verifying patches ==="
+        echo "--- ID table (should include meson8-nfc) ---"
+        grep -A12 "meson_nfc_id_table" "$DRIVER" | head -15
+    
+        echo "--- raw_writesize block (should say 'dev_warn') ---"
+        grep -A10 "raw_writesize = " "$DRIVER"
+
     - name: Cache kernel ccache objects
       uses: actions/cache@v5
       with:
@@ -372,7 +501,7 @@ jobs:
       run: ccache --show-stats
 
     - name: Upload DTB as standalone artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: meson8m2-m8s-dtb-build${{ github.run_number }}
         path: linux-src/arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb
