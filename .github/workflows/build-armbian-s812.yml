@@ -434,6 +434,17 @@ jobs:
           find arch/arm/boot/dts/amlogic/ -name "meson8*" 2>/dev/null || true
           exit 1
         fi
+    - name: Upload standalone kernel artifacts (when Armbian skipped)
+      if: ${{ inputs.skip_armbian == true }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: kernel-dtb-only-build${{ github.run_number }}
+        path: |
+          linux-src/arch/arm/boot/uImage
+          linux-src/arch/arm/boot/dts/amlogic/meson8m2-m8s.dtb
+        retention-days: 7
+        if-no-files-found: error
+    
     - name: Show ccache statistics
       run: ccache --show-stats
 
@@ -629,6 +640,7 @@ jobs:
         sudo xz -T0 -v "$IMAGE"
         ls -lh armbian-build/output/images/
     - name: Upload full image as artifact
+      if: ${{ inputs.skip_armbian != true }}
       uses: actions/upload-artifact@v7
       with:
         name: armbian-trixie-linux620-m8s-build${{ github.run_number }}
