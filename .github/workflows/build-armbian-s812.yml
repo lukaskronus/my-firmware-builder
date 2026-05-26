@@ -320,7 +320,7 @@ jobs:
             '\t\t */\n'
             '\t\tdev_warn(nfc->dev,\n'
             '\t\t\t"raw mode unsupported for this chip (%d > %ld); "\n'
-            '\t\t\t"ECC mode only\\n",\n'
+            '\t\t\t"ECC mode only\\\\n",\n'
             '\t\t\traw_writesize, NFC_CMD_RAW_LEN);\n'
             '\t}'
         )
