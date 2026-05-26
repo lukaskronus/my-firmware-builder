@@ -318,9 +318,10 @@ jobs:
         '\t\t * register limit (0x3FFF = 16383). Raw mode not supported\n'
         '\t\t * but ECC mode (1024-byte steps) works fine.\n'
         '\t\t */\n'
-        '\t\tdev_warn(nfc->dev,\n'
-        '\t\t\t "raw mode unsupported for this chip (%d > %ld); ECC mode only\\n",\n'
-        '\t\t\t raw_writesize, NFC_CMD_RAW_LEN);\n'
+        '\t\tdev_warn(nfc->dev, '\n'
+        '\t\t\t"raw mode unsupported for this chip (%d > %ld); "\n'
+        '\t\t\t"ECC mode only\\n",\n'
+        '\t\t\traw_writesize, NFC_CMD_RAW_LEN);\n'
         '\t}'
         )
         if 'ECC mode only' in text:
@@ -404,9 +405,8 @@ jobs:
       run: |
         cp my-repo/config_files/config-aml-s812 linux-src/.config
         cd linux-src
-        sed -i \
-          's@# CONFIG_POSIX_MQUEUE is not set@CONFIG_POSIX_MQUEUE=y\nCONFIG_POSIX_MQUEUE_SYSCTL=y@g' \
-          .config
+        sed -i 's/# CONFIG_POSIX_MQUEUE is not set/CONFIG_POSIX_MQUEUE=y/' .config
+        echo 'CONFIG_POSIX_MQUEUE_SYSCTL=y' >> .config
         patch_kconfig() {
           local key="$1" val="$2"
           if grep -q "^# ${key} is not set" .config; then
@@ -501,12 +501,12 @@ jobs:
       if: ${{ inputs.skip_armbian != true }}
       run: |
         IMAGE=$(ls armbian-build/output/images/*.img | head -1)
+        [ -z "$IMAGE" ] && { echo "ERROR: No .img file found"; exit 1; }
         echo "Target image: $IMAGE"
         mkdir -p /tmp/mnt_boot /tmp/mnt_root
-        LOOP=$(sudo losetup --find --show --partscan "$IMAGE")
+        LOOP=$(sudo losetup --find --show --partscan "$IMAGE") || { echo "ERROR: losetup failed"; exit 1; }
+        [ -z "$LOOP" ] && { echo "ERROR: LOOP device is empty"; exit 1; }
         echo "Loop device: $LOOP"
-        sudo mount "${LOOP}p1" /tmp/mnt_boot
-        sudo mount "${LOOP}p2" /tmp/mnt_root
 
         echo "=== Current boot partition contents ==="
         ls -lh /tmp/mnt_boot/
@@ -569,11 +569,11 @@ jobs:
 
         # Install mtd-utils into rootfs
         echo "Installing mtd-utils into rootfs ..."
-        sudo chroot /tmp/mnt_root /bin/bash -c "
-          apt-get update -qq && \
-          apt-get install -y --no-install-recommends mtd-utils && \
-          apt-get clean
-        " || echo "WARNING: mtd-utils install failed — install manually after boot"
+        sudo chroot /tmp/mnt_root /bin/bash -c '
+        apt-get update -qq && \
+        apt-get install -y --no-install-recommends mtd-utils && \
+        apt-get clean
+        ' || echo "WARNING: mtd-utils install failed — install manually after boot"
 
         # Install flash-to-nand.sh helper script
         sudo tee /tmp/mnt_root/root/flash-to-nand.sh > /dev/null << 'FLASHSCRIPT'
