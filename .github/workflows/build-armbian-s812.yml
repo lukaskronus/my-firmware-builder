@@ -507,6 +507,19 @@ jobs:
         LOOP=$(sudo losetup --find --show --partscan "$IMAGE") || { echo "ERROR: losetup failed"; exit 1; }
         [ -z "$LOOP" ] && { echo "ERROR: LOOP device is empty"; exit 1; }
         echo "Loop device: $LOOP"
+        
+        # Mount both partitions — p1 is FAT boot, p2 is ext4 rootfs
+        sudo mount "${LOOP}p1" /tmp/mnt_boot || {
+          echo "ERROR: failed to mount boot partition ${LOOP}p1"
+          sudo losetup -d "$LOOP"
+          exit 1
+        }
+        sudo mount "${LOOP}p2" /tmp/mnt_root || {
+          echo "ERROR: failed to mount root partition ${LOOP}p2"
+          sudo umount /tmp/mnt_boot
+          sudo losetup -d "$LOOP"
+          exit 1
+        }
 
         echo "=== Current boot partition contents ==="
         ls -lh /tmp/mnt_boot/
@@ -650,6 +663,57 @@ jobs:
         FLASHSCRIPT
         sudo chmod +x /tmp/mnt_root/root/flash-to-nand.sh
         echo "flash-to-nand.sh installed."
+        
+        # ---------------------------------------------------------------
+        # Auto-expand rootfs on first boot.
+        # ---------------------------------------------------------------
+        sudo tee /tmp/mnt_root/usr/local/sbin/expand-rootfs.sh > /dev/null << 'EXPANDSCRIPT'
+        #!/bin/bash
+        # One-shot rootfs expander — runs once on first boot then self-disables
+        set -e
+        
+        ROOT_DEV=$(findmnt -n -o SOURCE /)
+        DISK=$(echo "$ROOT_DEV" | sed 's/p\?[0-9]*$//')
+        PART_NUM=$(echo "$ROOT_DEV" | grep -o '[0-9]*$')
+        
+        echo "expand-rootfs: expanding $ROOT_DEV on $DISK (partition $PART_NUM)"
+        
+        # Resize the partition to fill the disk
+        parted -s "$DISK" resizepart "$PART_NUM" 100%
+        
+        # Inform kernel of new partition size
+        partprobe "$DISK" 2>/dev/null || true
+        
+        # Resize the filesystem
+        resize2fs "$ROOT_DEV"
+        
+        echo "expand-rootfs: done. Root filesystem expanded."
+        
+        # Self-disable so this never runs again
+        systemctl disable expand-rootfs.service
+        EXPANDSCRIPT
+                sudo chmod +x /tmp/mnt_root/usr/local/sbin/expand-rootfs.sh
+        
+                sudo tee /tmp/mnt_root/etc/systemd/system/expand-rootfs.service > /dev/null << 'SVCEOF'
+        [Unit]
+        Description=Expand root filesystem to fill device
+        After=local-fs.target
+        ConditionPathExists=/usr/local/sbin/expand-rootfs.sh
+        
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/expand-rootfs.sh
+        RemainAfterExit=yes
+        
+        [Install]
+        WantedBy=multi-user.target
+        SVCEOF
+
+        # Enable the service so it runs on first boot
+        sudo ln -sf \
+          /etc/systemd/system/expand-rootfs.service \
+          /tmp/mnt_root/etc/systemd/system/multi-user.target.wants/expand-rootfs.service
+        echo "Auto-expand service installed."
 
         sudo umount /tmp/mnt_boot
         sudo umount /tmp/mnt_root
