@@ -310,19 +310,19 @@ jobs:
             re.MULTILINE
         )
         new2 = (
-        '\traw_writesize = mtd->writesize + mtd->oobsize;\n'
-        '\tif (raw_writesize > NFC_CMD_RAW_LEN) {\n'
-        '\t\t/*\n'
-        '\t\t * Large-page chip (e.g. SanDisk SDTNRGAMA page=16384 +\n'
-        '\t\t * oob=1280 = 17664) exceeds the 14-bit NFC DMA length\n'
-        '\t\t * register limit (0x3FFF = 16383). Raw mode not supported\n'
-        '\t\t * but ECC mode (1024-byte steps) works fine.\n'
-        '\t\t */\n'
-        '\t\tdev_warn(nfc->dev, '\n'
-        '\t\t\t"raw mode unsupported for this chip (%d > %ld); "\n'
-        '\t\t\t"ECC mode only\\n",\n'
-        '\t\t\traw_writesize, NFC_CMD_RAW_LEN);\n'
-        '\t}'
+            '\traw_writesize = mtd->writesize + mtd->oobsize;\n'
+            '\tif (raw_writesize > NFC_CMD_RAW_LEN) {\n'
+            '\t\t/*\n'
+            '\t\t * Large-page chip (e.g. SanDisk SDTNRGAMA page=16384 +\n'
+            '\t\t * oob=1280 = 17664) exceeds the 14-bit NFC DMA length\n'
+            '\t\t * register limit (0x3FFF = 16383). Raw mode not supported\n'
+            '\t\t * but ECC mode (1024-byte steps) works fine.\n'
+            '\t\t */\n'
+            '\t\tdev_warn(nfc->dev,\n'
+            '\t\t\t"raw mode unsupported for this chip (%d > %ld); "\n'
+            '\t\t\t"ECC mode only\\n",\n'
+            '\t\t\traw_writesize, NFC_CMD_RAW_LEN);\n'
+            '\t}'
         )
         if 'ECC mode only' in text:
             print("Fix 2 skipped: raw mode patch already applied")
