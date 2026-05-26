@@ -284,7 +284,6 @@
 
     nand@0 {
         reg = <0>;
-        nand-on-flash-bbt;
 
 		partitions {
 			compatible = "fixed-partitions";
