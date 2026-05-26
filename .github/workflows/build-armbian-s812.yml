@@ -338,32 +338,40 @@ jobs:
         
         target.write_text(text)
         # ------------------------------------------------------------------
-        # Fix 3: Force in-memory BBT — never write BBT to flash.
+        # Fix 3: Clear NAND_BBT_USE_FLASH after nand_scan().
         # ------------------------------------------------------------------
-        old3 = (
-            '\tif (nand->bbt_options & NAND_BBT_USE_FLASH)\n'
-            '\t\tnand->bbt_options |= NAND_BBT_NO_OOB;\n'
+        pattern3 = re.compile(
+            r'(ret = nand_scan\(nand, nsels\);\n'
+            r'\s*if \(ret\)\n'
+            r'\s*return ret;\n)',
+            re.MULTILINE
         )
+        
         new3 = (
-            '\t/* Force in-memory BBT unconditionally.\n'
-            '\t * Vendor OOB layout differs from mainline so bad block scan\n'
-            '\t * produces false positives, leaving no space to write BBT.\n'
+            '\tret = nand_scan(nand, nsels);\n'
+            '\tif (ret)\n'
+            '\t\treturn ret;\n'
+            '\n'
+            '\t/* Force in-memory BBT after nand_scan().\n'
+            '\t * SanDisk SDTNRGAMA ONFI params cause the core to set\n'
+            '\t * NAND_BBT_USE_FLASH automatically. Clear it here because\n'
+            '\t * vendor OOB layout causes false bad block detections and\n'
+            '\t * leaves no space to write the BBT (-ENOSPC).\n'
             '\t */\n'
             '\tnand->bbt_options &= ~NAND_BBT_USE_FLASH;\n'
-            '\tif (nand->bbt_options & NAND_BBT_USE_FLASH)\n'
-            '\t\tnand->bbt_options |= NAND_BBT_NO_OOB;\n'
         )
-        if 'Force in-memory BBT' in text:
+        
+        if 'Force in-memory BBT after nand_scan' in text:
             print("Fix 3 skipped: already applied")
             applied += 1
-        elif old3 in text:
-            text = text.replace(old3, new3)
-            print("Fix 3 applied: forced in-memory BBT")
+        elif pattern3.search(text):
+            text = pattern3.sub(new3, text)
+            print("Fix 3 applied: cleared NAND_BBT_USE_FLASH after nand_scan()")
             applied += 1
         else:
-            print("ERROR: Fix 3 failed — BBT block not found")
+            print("ERROR: Fix 3 failed — nand_scan block not found")
             for line in text.split('\n'):
-                if 'bbt_options' in line:
+                if 'nand_scan' in line:
                     print(f"  {repr(line)}")
             sys.exit(1)
         print(f"\nTotal: {applied}/3 patches applied.")
