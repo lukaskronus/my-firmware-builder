@@ -1,0 +1,200 @@
+name: Build Kernel + Rootfs for Hi3798MV100
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: 'Kernel source branch'
+        required: true
+        default: 'histb'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+    - name: 1. Checkout My Repository
+      uses: actions/checkout@main
+      with:
+        path: myrepo
+
+    - name: 2. Install Build Dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          bc bison flex make \
+          gcc-arm-linux-gnueabihf \
+          g++-arm-linux-gnueabihf \
+          device-tree-compiler \
+          libssl-dev libncurses5-dev \
+          libelf-dev dwarves \
+          u-boot-tools git \
+          ccache \
+          qemu-user-static debootstrap \
+          e2fsprogs zip p7zip-full
+
+    - name: 3. Setup ccache
+      uses: hendrikmuhs/ccache-action@main
+      with:
+        key: ${{ runner.os }}-kernel-hi3798mv100-${{ github.event.inputs.kernel_branch }}
+        max-size: 2G
+        save: true
+        verbose: false
+
+    - name: 4. Clone Kernel Source
+      run: |
+        git clone https://github.com/histb-mainline/linux.git \
+          -b ${{ github.event.inputs.kernel_branch }} \
+          --depth=1 kernel-source
+        cd kernel-source
+        echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
+        echo "KERNEL_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+    - name: 5. Configure Kernel
+      working-directory: ./kernel-source
+      env:
+        ARCH: arm
+        CROSS_COMPILE: ccache arm-linux-gnueabihf-
+      run: |
+        cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-a312.config" .config
+        make olddefconfig
+
+    - name: 6. Copy DTS Files
+      working-directory: ./kernel-source
+      run: |
+        mkdir -p arch/arm/boot/dts/hisilicon
+        cp "${GITHUB_WORKSPACE}/myrepo/config_files/hi3798mv100-a312.dts" \
+           arch/arm/boot/dts/hisilicon/
+        echo 'dtb-$(CONFIG_ARCH_HISI) += hi3798mv100-a312.dtb' \
+           >> arch/arm/boot/dts/hisilicon/Makefile
+        echo "=== Last 3 lines of hisilicon Makefile ==="
+        tail -3 arch/arm/boot/dts/hisilicon/Makefile
+
+    - name: 7. Build Kernel, DTBs and Modules
+      working-directory: ./kernel-source
+      env:
+        ARCH: arm
+        CROSS_COMPILE: ccache arm-linux-gnueabihf-
+      run: |
+        make -j$(nproc) zImage dtbs modules \
+          KCFLAGS="-pipe" \
+          KBUILD_BUILD_TIMESTAMP="" \
+          KBUILD_BUILD_USER=ci \
+          KBUILD_BUILD_HOST=github
+
+    - name: 8. Install Modules
+      working-directory: ./kernel-source
+      env:
+        ARCH: arm
+        CROSS_COMPILE: ccache arm-linux-gnueabihf-
+      run: |
+        make modules_install INSTALL_MOD_PATH=./modules-staging
+        find ./modules-staging \( -name "build" -o -name "source" \) -type l -delete
+        ccache --show-stats
+
+    - name: 9. Create Bootable uImage
+      working-directory: ./kernel-source
+      run: |
+        cat arch/arm/boot/zImage \
+            arch/arm/boot/dts/hisilicon/hi3798mv100-a312.dtb \
+            > zImage-dtb
+        mkimage -A arm -O linux -T kernel -C none \
+          -a 0x02000000 -e 0x02000000 \
+          -n "Kernel ${{ env.KERNEL_VERSION }} for FPT A312" \
+          -d zImage-dtb uImage
+        mkimage -l uImage
+
+    - name: 10. Download and Extract Original TTL Package
+      run: |
+        wget --no-check-certificate -q -c \
+          "https://node4.histb.com:9088/update/system/TTL-hi3798mv100-32bit.zip" \
+          -O original_ttl.zip
+        mkdir -p ttl_template
+        unzip -q original_ttl.zip -d ttl_template/
+        echo "TTL template contents:"
+        ls -la ttl_template/
+
+    - name: 11. Build Debian 13 Trixie Rootfs
+      run: |
+        chmod +x myrepo/build_rootfs.sh
+        ./myrepo/build_rootfs.sh
+
+    - name: 12. Install Kernel Modules into Rootfs
+      run: |
+        ROOTFS_DIR="$(pwd)/pure_rootfs"
+        MODULES_SRC="kernel-source/modules-staging/lib/modules"
+
+        KVER=$(ls "$MODULES_SRC" | head -1)
+        if [ -z "$KVER" ]; then
+          echo "ERROR: No kernel modules found in $MODULES_SRC"
+          ls -la "$MODULES_SRC" || true
+          exit 1
+        fi
+        echo "Installing modules for kernel: $KVER"
+
+        sudo mkdir -p "$ROOTFS_DIR/lib/modules"
+        sudo cp -a "$MODULES_SRC/$KVER" "$ROOTFS_DIR/lib/modules/"
+
+        # Run depmod inside chroot
+        sudo mount -t proc  none "$ROOTFS_DIR/proc"
+        sudo mount -t sysfs none "$ROOTFS_DIR/sys"
+        sudo chroot "$ROOTFS_DIR" depmod -a "$KVER" || echo "depmod finished"
+        sudo umount "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys"
+
+        echo "Installed modules:"
+        ls -la "$ROOTFS_DIR/lib/modules/"
+
+    - name: 13. Create Rootfs Image
+      run: |
+        # 512MB image - resize-rootfs.service expands to full partition on first boot
+        dd if=/dev/zero of=rootfs-32-pure.img bs=1M count=512
+        mkfs.ext4 -F -L "rootfs" rootfs-32-pure.img
+
+        mkdir -p temp_mount
+        sudo mount -o loop rootfs-32-pure.img temp_mount
+        sudo cp -a pure_rootfs/. temp_mount/
+        sync
+        sudo umount temp_mount
+        rmdir temp_mount
+
+        ls -lh rootfs-32-pure.img
+
+    - name: 14. Package Final TTL
+      run: |
+        cp -r ttl_template/ final_package/
+        cp rootfs-32-pure.img final_package/rootfs-32.img
+        cp kernel-source/uImage final_package/uImage
+
+        DATE=$(date +%Y%m%d)
+        ZIP_NAME="TTL-hi3798mv100-Trixie-${{ env.KERNEL_VERSION }}-${DATE}.zip"
+
+        cd final_package
+        zip -r "../${ZIP_NAME}" .
+        cd ..
+
+        echo "Final package:"
+        ls -lh "${ZIP_NAME}"
+
+    - name: 15. Upload TTL Package
+      uses: actions/upload-artifact@main
+      with:
+        name: ttl-hi3798mv100-${{ github.run_number }}-${{ env.KERNEL_VERSION }}
+        path: TTL-hi3798mv100-Trixie-*.zip
+        retention-days: 7
+
+    - name: 16. Upload Rootfs Image
+      uses: actions/upload-artifact@main
+      with:
+        name: rootfs-${{ github.run_number }}-${{ env.KERNEL_VERSION }}
+        path: rootfs-32-pure.img
+        retention-days: 7
+
+    - name: 17. Upload Kernel uImage
+      uses: actions/upload-artifact@main
+      with:
+        name: kernel-${{ github.run_number }}-${{ env.KERNEL_VERSION }}
+        path: |
+          kernel-source/uImage
+          kernel-source/modules-staging/
+        retention-days: 10
