@@ -119,7 +119,29 @@ iface eth0 inet dhcp
 ETH
 
 # ── Serial console (systemd, NOT inittab) ────────────────────────────────────
-# ttyAMA0 is the PL011 UART on Hi3798MV100
+# Use a full unit file instead of drop-in to avoid dev-ttyAMA0.device dependency
+cat > /etc/systemd/system/serial-getty@ttyAMA0.service << 'SERVICE'
+[Unit]
+Description=Serial Getty on ttyAMA0
+Documentation=man:agetty(8) man:systemd-getty-generator(8)
+After=sysinit.target
+DefaultDependencies=no
+
+[Service]
+Type=idle
+ExecStart=-/sbin/agetty --keep-baud 115200 ttyAMA0 vt100
+Restart=always
+RestartSec=0
+UtmpIdentifier=ttyAMA0
+TTYPath=/dev/ttyAMA0
+TTYReset=yes
+TTYVHangup=yes
+KillMode=process
+
+[Install]
+WantedBy=getty.target
+SERVICE
+
 systemctl enable serial-getty@ttyAMA0.service
 
 # ── Locale ───────────────────────────────────────────────────────────────────
