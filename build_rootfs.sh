@@ -81,7 +81,9 @@ apt-get install -y -q \
     binutils \
     bsdmainutils \
     apt-utils \
-    e2fsprogs
+    e2fsprogs \
+    usbutils \
+    firmware-realtek
 
 # ── Hostname and hosts ───────────────────────────────────────────────────────
 echo "debian" > /etc/hostname
@@ -148,6 +150,13 @@ systemctl enable serial-getty@ttyAMA0.service
 echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/default/locale
+
+# ── Blacklisting problematic rtl8xxxu driver for RTL8188ETV ──────────────────
+cat <<EOF > "${ROOTFS}/etc/modprobe.d/realtek-wifi.conf"
+# Blacklist the mainline rtl8xxxu driver for RTL8188ETV (0bda:0179)
+# It fails to initialize on this device.
+blacklist rtl8xxxu
+EOF
 
 # ── First boot resize service ─────────────────────────────────────────────────
 # Automatically expands the ext4 filesystem to fill mmcblk0p9 on first boot
