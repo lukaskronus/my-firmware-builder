@@ -10,7 +10,7 @@ jobs:
 
     steps:
     - name: 1. Checkout Code
-      uses: actions/checkout@v6
+      uses: actions/checkout@main
 
     - name: 2. Install Dependencies
       run: |
@@ -154,21 +154,21 @@ jobs:
         ls -lh "${ZIP_NAME}"
 
     - name: 9. Upload TTL Package
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@main
       with:
         name: ttl-package-trixie
         path: TTL-hi3798mv100-32bit-Trixie-*.zip
         retention-days: 7
 
     - name: 10. Upload Rootfs Image
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@main
       with:
         name: rootfs-image-trixie
         path: rootfs-32-pure.img
         retention-days: 7
 
     - name: 11. Upload Kernel uImage
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@main
       with:
         name: kernel-uimage-6.19.0-rc3
         path: new_uImage
