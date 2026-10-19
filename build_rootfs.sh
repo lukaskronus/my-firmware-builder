@@ -76,7 +76,6 @@ apt-get install -y -q \
     iproute2 \
     iptables \
     nftables \
-    systemd-timesyncd \
     locales \
     htop \
     apt-utils \
