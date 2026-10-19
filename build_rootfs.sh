@@ -45,13 +45,13 @@ sudo debootstrap \
 
 # ── Chroot prep ──────────────────────────────────────────────────────────────
 echo "--- Preparing chroot environment ---"
-sudo cp "$QEMU_BIN" "$ROOTFS_DIR/usr/bin/"
+sudo cp /usr/bin/qemu-arm-static "$ROOTFS_DIR/usr/bin/"
 sudo cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
 
-sudo mount -t proc  /proc    "$ROOTFS_DIR/proc"
-sudo mount -t sysfs /sys     "$ROOTFS_DIR/sys"
-sudo mount -o bind  /dev     "$ROOTFS_DIR/dev"
-sudo mount -o bind  /dev/pts "$ROOTFS_DIR/dev/pts"
+sudo mount -t proc  /proc        "$ROOTFS_DIR/proc"
+sudo mount -t sysfs /sys         "$ROOTFS_DIR/sys"
+sudo mount -o bind  /dev         "$ROOTFS_DIR/dev"
+sudo mount -o bind  /dev/pts     "$ROOTFS_DIR/dev/pts"
 
 # ── Stage 2: configure inside chroot ─────────────────────────────────────────
 echo "--- Stage 2: debootstrap + configuration ---"
