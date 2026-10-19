@@ -1,9 +1,9 @@
 name: Build UBS static site
 
-# Produces a portable static site from the UBS open-license data and publishes it
-# as a Release asset. Download (stable URL):
+# Produces a portable static site from the UBS open-license data and publishes
+# it as a Release asset. Stable download URL:
 #   https://github.com/${{ github.repository }}/releases/download/site/ubs-site.zip
-# then extract into your nginx web root.
+# Extract into your nginx web root.
 
 on:
   workflow_dispatch:
@@ -19,23 +19,37 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ubs-site-release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout data
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
       - name: Fetch UBS data
-        run: git clone --depth 1 https://github.com/ubsicap/ubs-open-license.git data
+        run: |
+          git clone --depth 1 https://github.com/ubsicap/ubs-open-license.git data
+          echo "UBS_DATA_SHA=$(git -C data rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Set up Python
-        uses: actions/setup-python@main
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Clean previous output
+        run: rm -rf dist
+
       - name: Build site
         env:
-          SHAPE: ${{ inputs.shape || 'Data drop + viewer (light)' }}
+          SRC: ${{ github.workspace }}/data
+          OUT: ${{ github.workspace }}/dist
+          SHAPE: ${{ github.event.inputs.shape || 'Data drop + viewer (light)' }}
           UPSTREAM_SHA: ${{ github.sha }}
           UPSTREAM_REF: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
@@ -45,8 +59,10 @@ jobs:
           """Build a portable static site from the UBS open-license data repo. Pure stdlib."""
           import os, re, json, html, shutil, xml.etree.ElementTree as ET
 
-          SRC = os.environ.get("SRC", os.getcwd())
-          OUT = os.environ.get("OUT", os.path.join(SRC, "dist"))
+          SRC = os.environ.get("SRC", "")
+          if not SRC or not os.path.isdir(SRC):
+              raise SystemExit(f"SRC is not set or does not exist: {SRC!r}")
+          OUT = os.environ.get("OUT", os.path.join(os.getcwd(), "dist"))
           SHAPE = os.environ.get("SHAPE", "Data drop + viewer (light)")
           UPSTREAM_SHA = os.environ.get("UPSTREAM_SHA", "")
           UPSTREAM_REF = os.environ.get("UPSTREAM_REF", "")
@@ -68,7 +84,6 @@ jobs:
               while slug in used:
                   slug = f"{base}-{n}"; n += 1
               used.add(slug); return slug
-
 
           def version_of(path):
               m = re.search(r"[-_]v?(\d+(?:[._]\d+)*)", os.path.basename(path))
@@ -333,8 +348,10 @@ jobs:
           if __name__ == "__main__":
               main()
           PYEOF
+
       - name: Package
         run: zip -qr ubs-site.zip dist
+
       - name: Publish release asset (stable URL)
         env:
           GH_TOKEN: ${{ github.token }}
