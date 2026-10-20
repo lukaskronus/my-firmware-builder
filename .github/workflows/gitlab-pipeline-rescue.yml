@@ -1,4 +1,4 @@
-name: Build ARMv7 → GitLab Registry
+name: Build ARMv7 + Multi-arch → GitLab Registry
 
 on:
   workflow_dispatch:
@@ -7,7 +7,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     env:
-      IMAGE: ${{ secrets.GITLAB_REGISTRY_IMAGE }}
+      IMAGE:      ${{ secrets.GITLAB_REGISTRY_IMAGE }}       # goclaw-armv/goclaw
+      IMAGE_ARMV7: ${{ secrets.GITLAB_REGISTRY_IMAGE_ARMV7 }} # goclaw-armv/goclaw-armv7
     steps:
       - name: Clone GitLab repo
         env:
@@ -32,6 +33,9 @@ jobs:
           username: ${{ secrets.GITLAB_REGISTRY_USER }}
           password: ${{ secrets.GITLAB_REGISTRY_TOKEN }}
 
+      # ────────────────────────────────────────────────
+      # ARMv7 — single-platform, one build, two tags
+      # ────────────────────────────────────────────────
       - name: Build and push ARMv7 image
         uses: docker/build-push-action@v7
         with:
@@ -43,21 +47,26 @@ jobs:
             ENABLE_EMBEDUI=true
             VERSION=armv7-baseline
           tags: |
-            ${{ env.IMAGE }}:armv7-baseline
-            ${{ env.IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ env.IMAGE_ARMV7 }}:armv7-baseline
+            ${{ env.IMAGE_ARMV7 }}:latest
+          cache-from: type=gha,scope=armv7
+          cache-to: type=gha,mode=max,scope=armv7
 
-      - name: Build and push ARMv8 and AMD64 image
+      # ────────────────────────────────────────────────
+      # AMD64 + ARM64 — multi-arch manifest
+      # ────────────────────────────────────────────────
+      - name: Build and push AMD64 + ARM64 image
         uses: docker/build-push-action@v7
         with:
           context: ./src
           file: ./src/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
             ENABLE_EMBEDUI=true
             VERSION=latest
           tags: |
             ${{ env.IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ env.IMAGE }}:multiarch-baseline
+          cache-from: type=gha,scope=multiarch
+          cache-to: type=gha,mode=max,scope=multiarch
