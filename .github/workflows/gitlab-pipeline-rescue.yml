@@ -47,3 +47,17 @@ jobs:
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and push ARMv8 and AMD64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: ./src
+          file: ./src/Dockerfile
+          push: true
+          build-args: |
+            ENABLE_EMBEDUI=true
+            VERSION=latest
+          tags: |
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
