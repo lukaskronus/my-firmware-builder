@@ -73,7 +73,10 @@ apt-get install -y -q --no-install-recommends \
     iptables \
     e2fsprogs \
     chrony \
-    systemd-resolved
+    systemd-resolved \
+    usbutils \
+    firmware-realtek \
+    wpasupplicant
 
 # ── Hostname and hosts ───────────────────────────────────────────────────────
 echo "debian" > /etc/hostname
@@ -139,6 +142,22 @@ Name=eth0
 DHCP=yes
 NET
 
+# RTL8188ETV USB dongle (0bda:0179, rtl8xxxu). The credentials are left as
+# placeholders on purpose so no PSK is committed to git; edit them on the board
+# and run "systemctl restart systemd-networkd". systemd-networkd drives
+# wpa_supplicant itself, so no separate wifi service is needed.
+cat > /etc/systemd/network/20-wlan0.network << 'NET'
+[Match]
+Name=wlan*
+
+[Network]
+DHCP=yes
+
+[WPA]
+SSID=CHANGE-ME
+PSK=CHANGE-ME
+NET
+
 # Derive a stable locally administered MAC from the eMMC CID. The DTS stays
 # generic; the generated .link is applied by udev on every later boot.
 cat > /usr/local/sbin/set-eth0-mac << 'SCRIPT'
@@ -197,7 +216,7 @@ RemainAfterExit=yes
 WantedBy=sysinit.target
 SERVICE
 
-systemctl enable systemd-networkd.service systemd-resolved.service
+systemctl enable systemd-networkd.service systemd-resolved.service dbus.service
 systemctl enable set-eth0-mac.service
 
 # Point glibc at resolved's upstream file so Docker containers do not inherit
