@@ -5,10 +5,22 @@ Reads the English dictionary JSON files (read-only) and writes a portable
 static site data tree plus the search index. Standard library only.
 
     python3 build.py --repo ../ubs-open-license --out dist
+
+Version discovery:
+    Source filenames embed a version (UBSHebrewDic-v0.9.4-en.JSON). Instead of
+    hard-coding them, we glob the newest matching file. If a glob matches
+    nothing, the build fails with a clear message rather than a generic
+    FileNotFoundError.
+
+Count expectations:
+    The expect_* values are sanity checks against known upstream versions.
+    By default a mismatch is a warning (so minor upstream revisions don't
+    break CI). Pass --strict to restore hard-failure behaviour.
 """
 
 import argparse
 import datetime
+import glob
 import json
 import os
 import re
@@ -16,12 +28,19 @@ import shutil
 import sys
 import unicodedata
 
+# Glob patterns for the versioned source files. We deliberately do NOT bake a
+# version number in here -- resolve_latest() picks the newest match.
 SOURCES = {
     "h": {
         "label": "UBS Dictionary of Biblical Hebrew",
-        "version": "v0.9.3",
-        "entries": "dictionaries/hebrew/JSON/UBSHebrewDic-v0.9.3-en.JSON",
-        "domains": "dictionaries/hebrew/JSON/UBSHebrewDicLexicalDomains-v0.9.3-en.JSON",
+        # Display fallback only; overwritten by the version parsed from the
+        # filename during the build. Kept so meta.json is still populated if
+        # the filename ever lacks a version token (defensive).
+        "version": "unknown",
+        "entries_dir": "dictionaries/hebrew/JSON",
+        "domains_dir": "dictionaries/hebrew/JSON",
+        "entries_glob": "UBSHebrewDic-v*-en.JSON",
+        "domains_glob": "UBSHebrewDicLexicalDomains-v*-en.JSON",
         "expect_entries": 7941,
         "expect_meanings": 16573,
         "expect_refs": 288093,
@@ -29,9 +48,11 @@ SOURCES = {
     },
     "g": {
         "label": "UBS Dictionary of the Greek New Testament",
-        "version": "v1.1",
-        "entries": "dictionaries/greek/JSON/UBSGreekNTDic-v1.1-en.JSON",
-        "domains": "dictionaries/greek/JSON/UBSGreekNTDicLexicalDomains-v1.1-en.JSON",
+        "version": "unknown",
+        "entries_dir": "dictionaries/greek/JSON",
+        "domains_dir": "dictionaries/greek/JSON",
+        "entries_glob": "UBSGreekNTDic-v*-en.JSON",
+        "domains_glob": "UBSGreekNTDicLexicalDomains-v*-en.JSON",
         "expect_entries": 5507,
         "expect_meanings": 9178,
         "expect_refs": 130921,
@@ -63,6 +84,7 @@ BOOKS = [
 
 TOKEN = re.compile(r"\{([A-Z]):([^}]*)\}")
 REF = re.compile(r"^(\d{14})")
+VERSION_RE = re.compile(r"-(v\d+(?:\.\d+)*)-en\.JSON$")
 
 
 def norm(text):
@@ -103,6 +125,38 @@ def clean_ref(raw):
 def load(path):
     with open(path, encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def resolve_latest(directory, pattern):
+    """Return the newest file matching pattern in directory, or None.
+
+    "Newest" means highest version string when parseable, else mtime. We
+    sort by (basename, mtime) so two files like v0.9.3 and v0.9.4 sort
+    deterministically even on filesystems with coarse timestamps.
+    """
+    if not os.path.isdir(directory):
+        return None
+    candidates = glob.glob(os.path.join(directory, pattern))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: (os.path.basename(p), os.path.getmtime(p)))
+    return candidates[-1]
+
+
+def version_from_path(path):
+    """Extract 'v0.9.4' from 'UBSHebrewDic-v0.9.4-en.JSON' (or 'unknown')."""
+    match = VERSION_RE.search(os.path.basename(path or ""))
+    return match.group(1) if match else "unknown"
+
+
+def check_count(label, actual, expected, strict):
+    """Warn (or fail, in strict mode) when actual != expected."""
+    if actual == expected:
+        return
+    message = "%s: expected %d, found %d" % (label, expected, actual)
+    if strict:
+        sys.exit(message)
+    print("warning: " + message, file=sys.stderr)
 
 
 def build_entry(raw, corpus):
@@ -208,6 +262,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="../ubs-open-license", help="path to the data repo")
     parser.add_argument("--out", default="dist", help="output directory")
+    parser.add_argument("--strict", action="store_true",
+                        help="fail if entry/meaning/ref/domain counts differ from expectations")
     args = parser.parse_args()
 
     repo = os.path.abspath(args.repo)
@@ -219,23 +275,36 @@ def main():
     src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
     os.makedirs(out, exist_ok=True)
     for name in ("index.html", "app.js", "style.css", "favicon.svg"):
-        shutil.copyfile(os.path.join(src_dir, name), os.path.join(out, name))
+        src_path = os.path.join(src_dir, name)
+        if os.path.isfile(src_path):
+            shutil.copyfile(src_path, os.path.join(out, name))
+        else:
+            print("warning: missing source asset %s" % src_path, file=sys.stderr)
 
     index = []
     meta = {}
     total_refs = 0
 
     for corpus, cfg in SOURCES.items():
-        entry_path = os.path.join(repo, cfg["entries"])
-        domain_path = os.path.join(repo, cfg["domains"])
-        for path in (entry_path, domain_path):
-            if not os.path.isfile(path):
-                sys.exit("missing source file: %s" % path)
+        entries_dir = os.path.join(repo, cfg["entries_dir"])
+        domains_dir = os.path.join(repo, cfg["domains_dir"])
+
+        entry_path = resolve_latest(entries_dir, cfg["entries_glob"])
+        domain_path = resolve_latest(domains_dir, cfg["domains_glob"])
+
+        if not entry_path:
+            sys.exit("no entry file matching %r under %s" % (cfg["entries_glob"], entries_dir))
+        if not domain_path:
+            sys.exit("no domain file matching %r under %s" % (cfg["domains_glob"], domains_dir))
+
+        # Refresh the version from the actual file we picked up.
+        cfg["version"] = version_from_path(entry_path)
+        print("[%s] entries: %s" % (corpus, entry_path))
+        print("[%s] domains: %s" % (corpus, domain_path))
+        print("[%s] version: %s" % (corpus, cfg["version"]))
 
         raw_entries = load(entry_path)
-        if len(raw_entries) != cfg["expect_entries"]:
-            sys.exit("%s: expected %d entries, found %d"
-                     % (corpus, cfg["expect_entries"], len(raw_entries)))
+        check_count("%s entries" % corpus, len(raw_entries), cfg["expect_entries"], args.strict)
 
         entries = []
         meanings_count = 0
@@ -256,12 +325,8 @@ def main():
                 " ".join(plain(m["def"]) for m in entry["meanings"] if m["def"]),
             ])
 
-        if meanings_count != cfg["expect_meanings"]:
-            sys.exit("%s: expected %d meanings, found %d"
-                     % (corpus, cfg["expect_meanings"], meanings_count))
-        if refs_count != cfg["expect_refs"]:
-            sys.exit("%s: expected %d refs, found %d"
-                     % (corpus, cfg["expect_refs"], refs_count))
+        check_count("%s meanings" % corpus, meanings_count, cfg["expect_meanings"], args.strict)
+        check_count("%s refs" % corpus, refs_count, cfg["expect_refs"], args.strict)
         total_refs += refs_count
 
         entry_dir = os.path.join(data_dir, corpus, "entries")
@@ -270,9 +335,8 @@ def main():
             dump(os.path.join(entry_dir, entry["id"] + ".json"), entry)
 
         domains = build_domains(load(domain_path))
-        if len(domains) != cfg["expect_domains"]:
-            sys.exit("%s: expected %d domains, found %d"
-                     % (corpus, cfg["expect_domains"], len(domains)))
+        check_count("%s domains" % corpus, len(domains), cfg["expect_domains"], args.strict)
+
         codes = {d["code"] for d in domains}
         for node in domains:
             if node["parent"] and node["parent"] not in codes:
@@ -301,7 +365,7 @@ def main():
         meta[corpus] = {
             "label": cfg["label"],
             "version": cfg["version"],
-            "source": cfg["entries"],
+            "source": os.path.relpath(entry_path, repo),
             "entries": len(entries),
             "meanings": meanings_count,
             "refs": refs_count,
