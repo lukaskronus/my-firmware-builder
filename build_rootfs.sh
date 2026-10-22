@@ -20,7 +20,7 @@ mkdir -p "$ROOTFS_DIR"
 
 # ── 2. First stage debootstrap ───────────────────────────────────────────────
 # Only include packages needed for first boot here.
-# openssh-server, sudo etc. are added inside chroot to avoid duplication.
+# SSH, network and Docker prerequisites are added inside the chroot.
 echo "--- Stage 1: debootstrap ---"
 sudo debootstrap \
     --arch=armhf \
@@ -57,30 +57,21 @@ deb http://deb.debian.org/debian-security trixie-security main contrib non-free 
 SOURCES
 
 apt-get update -qq
-apt-get upgrade -y -q
+apt-get upgrade -y -q -o APT::Install-Recommends=false
 
 # ── Packages: minimal headless Docker host ──────────────────────────────────
-# REMOVED: binutils, bsdmainutils, cron, rsyslog, usbutils, net-tools,
-#          isc-dhcp-client, ifupdown (replaced by systemd-networkd)
-# ADDED  : iptables, nftables, iproute2, gnupg, systemd-timesyncd,
-#          docker prerequisites
-apt-get install -y -q \
+# Only boot, SSH, Docker prerequisites, time sync, and rootfs resize.
+apt-get install -y -q --no-install-recommends \
     kmod \
-    sudo \
-    nano \
     curl \
-    wget \
     gnupg \
     ca-certificates \
     openssh-server \
     iproute2 \
     iptables \
-    nftables \
-    locales \
-    htop \
-    apt-utils \
     e2fsprogs \
-    chrony
+    chrony \
+    systemd-resolved
 
 # ── Hostname and hosts ───────────────────────────────────────────────────────
 echo "debian" > /etc/hostname
@@ -100,6 +91,24 @@ echo "root:1234" | chpasswd
 sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl enable ssh
 
+# Generate host keys on first boot so cloned images do not share them.
+rm -f /etc/ssh/ssh_host_*
+cat > /etc/systemd/system/ssh-keygen.service << 'SERVICE'
+[Unit]
+Description=Generate SSH host keys
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+systemctl enable ssh-keygen.service
+
 # ── fstab ────────────────────────────────────────────────────────────────────
 cat > /etc/fstab << 'FSTAB'
 # /etc/fstab
@@ -110,12 +119,88 @@ tmpfs           /tmp    tmpfs   defaults,noatime,nosuid,size=100M    0 0
 tmpfs           /var/tmp tmpfs  defaults,noatime,nosuid,size=50M     0 0
 FSTAB
 
-# ── Network: DHCP on eth0 ────────────────────────────────────────────────────
-mkdir -p /etc/network/interfaces.d
-cat > /etc/network/interfaces.d/eth0 << 'ETH'
-auto eth0
-iface eth0 inet dhcp
-ETH
+# ── Network: systemd-networkd + per-board MAC ───────────────────────────────
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/10-lo.network << 'NET'
+[Match]
+Name=lo
+
+[Network]
+Address=127.0.0.1/8
+NET
+
+cat > /etc/systemd/network/10-eth0.network << 'NET'
+[Match]
+Name=eth0
+
+[Network]
+DHCP=yes
+NET
+
+# Derive a stable locally administered MAC from the eMMC CID. The DTS stays
+# generic; the generated .link is applied by udev on every later boot.
+cat > /usr/local/sbin/set-eth0-mac << 'SCRIPT'
+#!/bin/sh
+set -eu
+
+LINK=/etc/systemd/network/10-eth0.link
+[ -e "$LINK" ] && exit 0
+
+CID=$(cat /sys/block/mmcblk0/device/cid 2>/dev/null || true)
+[ -n "$CID" ] || CID=$(cat /etc/machine-id 2>/dev/null || true)
+[ -n "$CID" ] || exit 0
+
+HASH=$(printf '%s' "$CID" | sha256sum | cut -c1-12)
+B1=$(printf '%s' "$HASH" | cut -c1-2)
+B2=$(printf '%s' "$HASH" | cut -c3-4)
+B3=$(printf '%s' "$HASH" | cut -c5-6)
+B4=$(printf '%s' "$HASH" | cut -c7-8)
+B5=$(printf '%s' "$HASH" | cut -c9-10)
+B6=$(printf '%s' "$HASH" | cut -c11-12)
+FIRST=$(( (0x$B1 & 0xFC) | 0x02 ))
+MAC=$(printf '%02x:%s:%s:%s:%s:%s' "$FIRST" "$B2" "$B3" "$B4" "$B5" "$B6")
+[ "${#MAC}" -eq 17 ] || exit 1
+
+mkdir -p /etc/systemd/network
+cat > "$LINK" << EOF
+[Match]
+OriginalName=eth0
+
+[Link]
+MACAddressPolicy=none
+MACAddress=$MAC
+EOF
+chmod 0644 "$LINK"
+
+# Apply immediately; on later boots udev applies the .link before networkd.
+udevadm settle --timeout=5 2>/dev/null || true
+ip link set dev eth0 address "$MAC" 2>/dev/null || true
+SCRIPT
+chmod 0755 /usr/local/sbin/set-eth0-mac
+
+cat > /etc/systemd/system/set-eth0-mac.service << 'SERVICE'
+[Unit]
+Description=Set a stable per-board MAC address for eth0
+ConditionPathExists=!/etc/systemd/network/10-eth0.link
+Before=network-pre.target
+After=local-fs.target systemd-udevd.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/set-eth0-mac
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+SERVICE
+
+systemctl enable systemd-networkd.service systemd-resolved.service
+systemctl enable set-eth0-mac.service
+
+# Point glibc at resolved's upstream file so Docker containers do not inherit
+# the 127.0.0.53 stub address.
+ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
 
 # ── Serial console (systemd, NOT inittab) ────────────────────────────────────
 # Use a full unit file instead of drop-in to avoid dev-ttyAMA0.device dependency
@@ -144,9 +229,10 @@ SERVICE
 systemctl enable serial-getty@ttyAMA0.service
 
 # ── Locale ───────────────────────────────────────────────────────────────────
-echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
-locale-gen
-echo "LANG=en_US.UTF-8" > /etc/default/locale
+# C.UTF-8 is built into glibc, so the locales package is unnecessary.
+cat > /etc/default/locale << 'LOCALE'
+LANG=C.UTF-8
+LOCALE
 
 # ── First boot resize service ─────────────────────────────────────────────────
 # Automatically expands the ext4 filesystem to fill mmcblk0p9 on first boot
@@ -173,7 +259,15 @@ systemctl enable resize-rootfs.service
 apt-get autoremove -y -q
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* /usr/share/locale/*
 rm -f /usr/bin/qemu-arm-static
+
+# Give cloned images a fresh machine-id and SSH host keys on first boot.
+: > /etc/machine-id
+rm -f /var/lib/dbus/machine-id /var/lib/systemd/random-seed
+mkdir -p /var/lib/dbus
+ln -s /etc/machine-id /var/lib/dbus/machine-id
+rm -f /etc/ssh/ssh_host_*
 
 echo "✅ Chroot configuration complete"
 CHROOT_EOF
