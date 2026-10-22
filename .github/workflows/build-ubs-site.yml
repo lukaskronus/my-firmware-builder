@@ -17,14 +17,14 @@ jobs:
         uses: actions/checkout@main
         with:
           repository: ubsicap/ubs-open-license
-          path: data
+          path: ubs-dict-site/data
 
       - name: Build static site
-        run: python3 ubs-dict-site/build.py --repo data --out dist
+        run: python3 ubs-dict-site/build.py --repo ubs-dict-site/data --out ubs-dict-site/dist
 
       - name: Upload portable site archive
         uses: actions/upload-artifact@main
         with:
           name: ubs-dict-site
-          path: dist
+          path: ubs-dict-site/dist
           if-no-files-found: error
