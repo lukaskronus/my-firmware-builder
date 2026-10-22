@@ -62,6 +62,8 @@ apt-get upgrade -y -q -o APT::Install-Recommends=false
 # ── Packages: minimal headless Docker host ──────────────────────────────────
 # Only boot, SSH, Docker prerequisites, time sync, and rootfs resize.
 apt-get install -y -q --no-install-recommends \
+    sudo \
+    nano \
     kmod \
     curl \
     gnupg \
