@@ -7,12 +7,11 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: HiSilicon Hi3798MV100 thermal sensor
 
 maintainers:
-  - David Yang <mmyangfl@gmail.com>
+  - Kobayashi <koba@somedco.eu.org>
 
 description: |
-  The Hi3798MV100 temperature sensor is part of the PMOC block.  It
-  provides eight 8-bit samples through two registers.  A per-chip trim
-  value is read from the OTP block.
+  The Hi3798MV100 temperature sensor is part of the PMOC block.  Writing
+  PMC10 starts a conversion and PMC12..PMC15 then hold eight 10-bit samples.
 
 allOf:
   - $ref: thermal-sensor.yaml
@@ -22,14 +21,7 @@ properties:
     const: hisilicon,hi3798mv100-tsensor
 
   reg:
-    items:
-      - description: PMOC temperature registers
-      - description: OTP registers
-
-  reg-names:
-    items:
-      - const: pmoc
-      - const: otp
+    maxItems: 1
 
   "#thermal-sensor-cells":
     const: 0
@@ -37,7 +29,6 @@ properties:
 required:
   - compatible
   - reg
-  - reg-names
   - "#thermal-sensor-cells"
 
 unevaluatedProperties: false
@@ -46,8 +37,7 @@ examples:
   - |
     thermal-sensor@8a23028 {
         compatible = "hisilicon,hi3798mv100-tsensor";
-        reg = <0x8a23028 0x10>, <0x8ab0000 0x1000>;
-        reg-names = "pmoc", "otp";
+        reg = <0x8a23028 0x18>;
         #thermal-sensor-cells = <0>;
     };
 

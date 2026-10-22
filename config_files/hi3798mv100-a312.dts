@@ -59,12 +59,10 @@
 			thermal-sensors = <&tsensor>;
 
 			trips {
-				hot: hot {
-					temperature = <95000>;
-					hysteresis = <5000>;
-					type = "hot";
-				};
-
+				/*
+				 * No cooling device on this board and no cpufreq
+				 * OPP table, so only the critical trip can act.
+				 */
 				critical: critical {
 					temperature = <115000>;
 					hysteresis = <5000>;
@@ -78,8 +76,8 @@
 &soc {
 	tsensor: thermal-sensor@8a23028 {
 		compatible = "hisilicon,hi3798mv100-tsensor";
-		reg = <0x8a23028 0x10>, <0x8ab0000 0x1000>;
-		reg-names = "pmoc", "otp";
+		/* PMC10..PMC15: control plus four sample registers. */
+		reg = <0x8a23028 0x18>;
 		#thermal-sensor-cells = <0>;
 		status = "okay";
 	};
