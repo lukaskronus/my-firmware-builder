@@ -31,3 +31,8 @@ Compare the check file with `uImage`
 ```bash
 cmp -n "$size" uImage /tmp/kernel-readback.bin && echo "kernel write OK"
 ```
+Extract modules to `/lib/modules`
+
+```bash
+sudo tar -xzvf modules.tar.gz -C /
+```
