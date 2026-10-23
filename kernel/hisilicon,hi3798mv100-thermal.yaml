@@ -11,7 +11,7 @@ maintainers:
 
 description: |
   The Hi3798MV100 temperature sensor is part of the PMOC block.  Writing
-  PMC10 starts a conversion and PMC12..PMC15 then hold eight 10-bit samples.
+  PMC10 starts a conversion and PMC12..PMC13 then hold eight 8-bit samples.
 
 allOf:
   - $ref: thermal-sensor.yaml

@@ -3,8 +3,12 @@
  * HiSilicon Hi3798MV100 thermal sensor driver
  *
  * The sensor lives in the PMOC block.  Writing PMC10 starts a conversion;
- * PMC12..PMC15 then hold eight 10-bit samples that average to a code between
- * 125 (minus 40 C) and 931 (125 C).
+ * PMC12 and PMC13 then hold eight 8-bit samples whose average is converted
+ * with the MV100 linear formula.
+ *
+ * Do not copy the hi3798cvx (CV200) vendor code here: it writes 0x6005 to
+ * PMC10 and reads eight 10-bit samples from PMC12..PMC15, which decodes the
+ * MV100's packed bytes as wrong values and reports a bogus temperature.
  */
 
 #include <linux/delay.h>
@@ -17,8 +21,7 @@
 /* The DT reg starts at PMC10, so these offsets are relative to it. */
 #define HI3798MV100_PMC10		0x00
 #define HI3798MV100_PMC12		0x08
-#define HI3798MV100_PMC10_START		0x6005
-#define HI3798MV100_TEMP_MASK		0x3ff
+#define HI3798MV100_PMC10_START		0x07200000
 #define HI3798MV100_TEMP_SAMPLES	8
 
 struct hi3798mv100_thermal {
@@ -34,15 +37,20 @@ static int hi3798mv100_thermal_get_temp(struct thermal_zone_device *tz, int *tem
 	writel(HI3798MV100_PMC10_START, priv->pmoc + HI3798MV100_PMC10);
 	msleep(16);
 
-	for (i = 0; i < 4; i++) {
+	/* Eight samples, packed as four bytes in each of PMC12/PMC13. */
+	for (i = 0; i < 2; i++) {
 		val = readl(priv->pmoc + HI3798MV100_PMC12 + i * 4);
-		sum += val & HI3798MV100_TEMP_MASK;
-		sum += (val >> 16) & HI3798MV100_TEMP_MASK;
+		sum += val & 0xff;
+		sum += (val >> 8) & 0xff;
+		sum += (val >> 16) & 0xff;
+		sum += (val >> 24) & 0xff;
 	}
 
-	writel(0, priv->pmoc + HI3798MV100_PMC10);
+	if (sum == 0 || sum == HI3798MV100_TEMP_SAMPLES * 0xff)
+		return -EIO;
 
-	t = ((int)(sum / HI3798MV100_TEMP_SAMPLES) - 125) * 165 / 806 - 40;
+	/* 0..255 maps to -40..140 C. */
+	t = ((int)(sum / HI3798MV100_TEMP_SAMPLES) * 180) / 255 - 40;
 	*temp = t * 1000;
 	return 0;
 }

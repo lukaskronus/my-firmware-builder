@@ -76,7 +76,7 @@
 &soc {
 	tsensor: thermal-sensor@8a23028 {
 		compatible = "hisilicon,hi3798mv100-tsensor";
-		/* PMC10..PMC15: control plus four sample registers. */
+		/* PMC10 control, PMC12/PMC13 hold the eight samples. */
 		reg = <0x8a23028 0x18>;
 		#thermal-sensor-cells = <0>;
 		status = "okay";
